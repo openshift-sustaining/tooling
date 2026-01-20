@@ -17,7 +17,7 @@ The **OCP Sustaining Agentic Bot** is an extensible, AI-powered assistant design
 
 ## 2. High-Level Architecture
 
-![OCP Sustaining Bot - Architecture](./architecture.heic)
+![OCP Sustaining Bot - Architecture](./architecture.png)
 
 *High-level architecture showing Frontend, Backend, Tool Registry, and External Services*
 
