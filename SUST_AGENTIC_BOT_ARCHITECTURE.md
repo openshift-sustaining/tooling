@@ -286,35 +286,7 @@ ToolRegistry {
 
 #### 3.3.1 Layout Structure
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Header Bar (Logo, Title, Connection Status, Settings)                   │
-├────────────────────────────────────┬─────────────────────────────────────┤
-│                                    │                                     │
-│                                    │   Thinking/Planning Panel           │
-│                                    │   (Collapsible - Click to Expand)   │
-│      Main Chat Panel               │   ┌─────────────────────────────┐  │
-│      (User & Bot Messages)         │   │ 🧠 Agent Reasoning...       │  │
-│                                    │   │ ├─ Analyzing user intent    │  │
-│                                    │   │ ├─ Matching tools           │  │
-│                                    │   │ └─ Generating plan          │  │
-│                                    │   └─────────────────────────────┘  │
-│                                    │                                     │
-│                                    │   Execution Plan Panel              │
-│                                    │   ┌─────────────────────────────┐  │
-│                                    │   │ Step 1: ✓ Fetch CVE Data   │  │
-│                                    │   │ Step 2: ⏳ Analyze Impact   │  │
-│                                    │   │ Step 3: ⏸ Apply Fix        │  │
-│                                    │   └─────────────────────────────┘  │
-├────────────────────────────────────┴─────────────────────────────────────┤
-│  Consent Bar (When approval needed)                                      │
-│  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ 🔐 Approve "Apply Fix" to go.mod?  [Approve] [Reject] [Approve All]│ │
-│  └────────────────────────────────────────────────────────────────────┘ │
-├──────────────────────────────────────────────────────────────────────────┤
-│  Input Area (Textarea + Send Button)                                     │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+![OCP Sustaining Bot - UI Mockup](./chatpanel.png)
 
 #### 3.3.2 Component Breakdown
 
