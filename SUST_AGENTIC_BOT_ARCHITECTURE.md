@@ -1,5 +1,5 @@
 # OCP Sustaining Agentic Bot
-## Architecture & Medium-Level Design Document
+## Architecture & Design Document
 
 ---
 
@@ -23,7 +23,7 @@ The **OCP Sustaining Agentic Bot** is an extensible, AI-powered assistant design
 
 ---
 
-## 3. Core Components - Low Level Design
+## 3. Core Components - Design
 
 ### 3.1 Agentic Orchestrator
 
@@ -736,17 +736,6 @@ Would you like me to show the recent comments?"
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### 3.6.7 Why No Analytics Dashboard?
-
-| Reason | Explanation |
-|--------|-------------|
-| **Simpler Architecture** | No additional frontend to build/maintain |
-| **Consistent UX** | Users interact with feedback through the same bot interface |
-| **On-Demand Access** | Insights fetched only when needed, not constantly computed |
-| **Extensible** | The `fetch_feedback_insights` tool can be enhanced without UI changes |
-| **Bot-Native** | Aligns with the agentic philosophy - bot handles everything |
-
----
 
 ## 4. Dynamic Workflow Architecture
 
