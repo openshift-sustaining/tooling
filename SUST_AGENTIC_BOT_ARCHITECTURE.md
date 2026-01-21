@@ -19,7 +19,7 @@ The **OCP Sustaining Agentic Bot** is an extensible, AI-powered assistant design
 
 ![OCP Sustaining Bot - Architecture](./architecture.png)
 
-*High-level architecture showing Frontend, Backend, Tool Registry, and External Services*
+*High-level architecture showing Frontend (Chat + Dashboard), Backend (Orchestrator, State, Tools), External Services, and Central Database*
 
 ---
 
@@ -92,11 +92,15 @@ PlanStep {
 **Execution Loop**:
 ```
 for each step in plan:
-    1. CHECK state.data for required inputs → skip if missing
-    2. REQUEST consent if tool.requires_consent == true
-    3. EXECUTE tool → tool writes results to state.data
-    4. EXECUTOR writes step_status, retry_count to state
-    5. ON FAILURE: evaluate state → retry / skip / re-plan / abort
+    1. GET tool config from Tool Registry (including retry policy)
+    2. CHECK state.data for required inputs → skip if missing
+    3. REQUEST consent if tool.requires_consent == true
+    4. EXECUTE tool → tool writes results to state.data
+    5. EXECUTOR writes step_status, retry_count to state.data
+    6. ON FAILURE:
+       ├── IF tool.is_retriable AND state.retry_count < tool.max_retries
+       │   └── Wait tool.retry_delay_ms, increment retry_count, GOTO step 4
+       ├── ELSE ask Planner for alternative or abort
 ```
 
 #### 3.1.3 Consent Manager
@@ -162,6 +166,11 @@ Tool {
     risk_level: "low" | "medium" | "high"
     estimated_duration: string
     
+    // === Retry Policy (defined per tool) ===
+    is_retriable: boolean               // Can this tool be retried on failure?
+    max_retries: number                 // Max retry attempts (e.g., 3)
+    retry_delay_ms: number              // Delay between retries (e.g., 1000)
+    
     // === Tasks (what the tool actually does) ===
     tasks: Task[]                       // One or more low-level operations
     
@@ -194,6 +203,10 @@ Tool: assess_cve
   
   requires_consent: false
   risk_level: low
+  
+  is_retriable: true
+  max_retries: 2
+  retry_delay_ms: 1000
   
   tasks:
     - {type: "llm_call", description: "Analyze CVE impact on repo", target: "llm"}
@@ -233,9 +246,13 @@ ToolRegistry {
 
 #### 3.3.1 Layout Structure
 
-![OCP Sustaining Bot - UI Mockup](./chatpanel.png)
+![OCP Sustaining Bot - Chat Panel](./chatpanel.png)
 
-*UI mockup showing the main interface layout*
+*Chat panel with real-time thinking, execution plan, and consent bar*
+
+![OCP Sustaining Bot - Dashboard](./dashboard.png)
+
+*Dashboard showing session history, analytics, and feedback metrics (Admin only)*
 
 #### 3.3.2 Component Breakdown
 
@@ -438,9 +455,10 @@ The Executor uses current state to make intelligent decisions:
 │                                                                              │
 │  AFTER step failure:                                                         │
 │  ├── Read state.data.last_error for context                                │
-│  ├── Check state.data.retry_count against max_retries                      │
+│  ├── Get tool.is_retriable and tool.max_retries from Tool Registry        │
+│  ├── Check state.data.retry_count against tool.max_retries                 │
 │  ├── Evaluate state to determine:                                           │
-│  │   ├── Can we retry with different params? (check what's in state)       │
+│  │   ├── Can we retry? (tool.is_retriable AND retry_count < max_retries)  │
 │  │   ├── Can we skip and continue? (check if downstream has alternatives)  │
 │  │   └── Must we abort? (critical state missing)                           │
 │  └── Update state.data.last_error_step and state.data.retry_count          │
@@ -450,14 +468,25 @@ The Executor uses current state to make intelligent decisions:
 
 **Decision Matrix:**
 
-| State Condition | Executor Decision |
-|-----------------|-------------------|
-| `retry_count < max_retries` AND `last_error` is retriable | Retry same step |
-| `retry_count >= max_retries` | Ask Planner for alternative or abort |
-| Required input `null` in `state.data` | Skip step, log warning |
-| `is_false_alarm == true` | Skip remediation steps, go to summary |
-| `fix_available == false` | Skip apply_fix, generate "no fix" report |
-| `test_success == false` AND `retry_count < max` | Retry with Planner guidance |
+| Condition | Source | Executor Decision |
+|-----------|--------|-------------------|
+| `tool.is_retriable == true` AND `state.retry_count < tool.max_retries` | Tool Registry + State | Retry with delay (`tool.retry_delay_ms`) |
+| `tool.is_retriable == false` OR `state.retry_count >= tool.max_retries` | Tool Registry + State | Ask Planner for alternative or abort |
+| Required input `null` in `state.data` | State | Skip step, log warning |
+| `state.is_false_alarm == true` | State | Skip remediation steps, go to summary |
+| `state.fix_available == false` | State | Skip apply_fix, generate "no fix" report |
+| `state.test_success == false` AND retriable | Tool Registry + State | Retry with Planner guidance |
+
+**Data Source Clarification:**
+
+| Data | Source | Description |
+|------|--------|-------------|
+| `max_retries` | Tool Registry | Defined per tool (e.g., API tools: 3, LLM tools: 2) |
+| `is_retriable` | Tool Registry | Whether tool can be retried on failure |
+| `retry_delay_ms` | Tool Registry | Wait time between retries |
+| `retry_count` | State | Current attempt count (starts at 0, incremented by Executor) |
+| `last_error` | State | Error message from last failure |
+| `last_error_step` | State | Step ID that last failed |
 
 #### 3.4.5 State Change Notifications
 
@@ -1014,6 +1043,14 @@ UI Rendering by Status:
 | Frontend → Backend | HMAC-signed requests (server-side) |
 | Backend → External APIs | API keys (environment variables) |
 | Session Management | UUID-based sessions with timeout |
+| Dashboard Access | Role-based (admin only) |
+
+**User Roles:**
+
+| Role | Permissions |
+|------|-------------|
+| `user` | Chat access, own session history |
+| `admin` | Chat access, Dashboard access, all session history, analytics |
 
 ### 6.2 Tool Execution Safety
 
@@ -1032,73 +1069,9 @@ UI Rendering by Status:
 
 ---
 
-## 7. Deployment Architecture
+## 7. Technology Stack
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Load Balancer                            │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-        ┌──────────┐    ┌──────────┐    ┌──────────┐
-        │ Frontend │    │ Frontend │    │ Frontend │
-        │ (Nginx)  │    │ (Nginx)  │    │ (Nginx)  │
-        └──────────┘    └──────────┘    └──────────┘
-              │               │               │
-              └───────────────┼───────────────┘
-                              │
-                              ▼
-                    ┌──────────────────┐
-                    │  Backend Pool    │
-                    │  (FastAPI +      │
-                    │   WebSocket)     │
-                    └──────────────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-        ┌──────────┐    ┌──────────┐    ┌──────────┐
-        │   LLM    │    │  GitHub  │    │  Redis   │
-        │   API    │    │   API    │    │ (Sessions│
-        │          │    │          │    │  & State)│
-        └──────────┘    └──────────┘    └──────────┘
-```
-
----
-
-## 8. Metrics & Observability
-
-### 8.1 Key Metrics
-
-| Metric | Description |
-|--------|-------------|
-| `plan_generation_time` | Time to create execution plan |
-| `consent_response_time` | User decision latency |
-| `tool_execution_time` | Per-tool execution duration |
-| `consent_approval_rate` | % of approvals vs rejections |
-| `capability_match_rate` | % of requests matched to tools |
-| `session_duration` | Average session length |
-| `feedback_sentiment` | Positive/negative feedback ratio |
-
-### 8.2 Logging Structure
-
-```
-Log Entry {
-    timestamp: ISO8601
-    level: INFO | WARN | ERROR
-    session_id: string
-    component: "planner" | "executor" | "consent" | "tool"
-    event: string
-    details: dict
-    trace_id: string (for distributed tracing)
-}
-```
-
----
-
-## 9. Technology Stack
-
-### 9.1 Stack Overview
+### 7.1 Stack Overview
 
 | Layer | Technology | Why This Choice |
 |-------|------------|-----------------|
@@ -1108,12 +1081,14 @@ Log Entry {
 | **Backend Framework** | Python + FastAPI | Native async support, automatic Pydantic validation, WebSocket built-in, excellent for AI/ML integrations |
 | **Real-time Communication** | WebSocket (native) | Bidirectional streaming required for thinking/progress updates, lower latency than polling |
 | **LLM Provider** | Any LLM with function calling (e.g., Gemini, OpenAI, Claude, Ollama) | Configurable; requires structured output and function calling support |
-| **Session Store** | Redis (production) / In-memory (dev) | Fast key-value access, TTL support for session expiry, horizontal scaling |
+| **Active Session Store** | In-memory (Python dict) | Fast during execution; no DB latency for active sessions |
+| **Persistent Database** | SQLite (dev) / PostgreSQL (prod) | SQLite for local dev (zero config), PostgreSQL for multi-pod production |
+| **ORM** | SQLAlchemy | Supports both SQLite and PostgreSQL with same codebase |
 | **Containerization** | Docker | Portable, consistent environments across dev/staging/prod |
 | **Reverse Proxy** | Nginx | SSL termination, auth header injection, static file serving, WebSocket proxying |
 | **Orchestration** | Docker Compose (dev) / Kubernetes (prod) | Simple local dev, scalable production deployment |
 
-### 9.2 Why No LangGraph
+### 7.2 Why No LangGraph
 
 **Why we avoid LangGraph (or similar fixed graph frameworks):**
 
@@ -1129,7 +1104,83 @@ This enables true extensibility where adding a new tool doesn't require touching
 
 ---
 
-## 10. Success Criteria
+## 8. Persistence Layer
+
+This section covers the database architecture for storing session history, feedback, and analytics data.
+
+### 8.1 Storage Strategy
+
+| Phase | Storage | Purpose |
+|-------|---------|---------|
+| **Active Session** | In-memory (Python dict/object) | Fast read/write during execution |
+| **Session End** | Push to Database | Persist for dashboard & analytics |
+| **Dashboard Query** | Read from Database | Historical view & reporting |
+
+### 8.2 Database Support
+
+The system supports both **SQLite** (local development) and **PostgreSQL** (production/containers) via configuration:
+
+```
+DATABASE_CONFIG {
+    type: "sqlite" | "postgresql"
+    
+    # SQLite (local/dev)
+    sqlite_path: "./data/ocp_bot.db"
+    
+    # PostgreSQL (production/containers)
+    postgres_host: string
+    postgres_port: number (default: 5432)
+    postgres_database: string
+    postgres_user: string
+    postgres_password: string (from secret)
+    
+    # Connection pool
+    pool_size: number (default: 5)
+    max_overflow: number (default: 10)
+}
+```
+
+| Mode | Database | Use Case |
+|------|----------|----------|
+| **Local/Dev** | SQLite | Single developer, quick setup, file-based |
+| **Production** | PostgreSQL | Multi-pod deployment, concurrent access, scalable |
+
+### 8.3 Data Model
+
+Core entities stored in the database:
+
+| Entity | Purpose |
+|--------|---------|
+| **sessions** | Session metadata, status, duration, user prompt, outputs |
+| **session_steps** | Individual tool executions per session with status and timing |
+| **feedback** | User ratings and comments (session-level and step-level) |
+| **users** | User accounts with roles (user/admin) |
+| **tool_analytics** | Aggregated tool performance metrics |
+
+> **Note:** Detailed schemas, entity relationships, and archival flows are documented separately in the Database Design Document.
+
+### 8.4 Multi-Pod Architecture
+
+For production deployments where each session runs in a separate backend pod:
+
+- **Frontend**: Single React app with Chat and Dashboard tabs
+- **Backend Pods**: One per active session, state held in-memory
+- **Central Database**: PostgreSQL pod for persistent storage
+- **Session Archival**: On session end, data pushed to central DB
+
+### 8.5 Dashboard Access Control
+
+| Role | Chat Access | Dashboard Access |
+|------|-------------|------------------|
+| `user` | ✓ Full access | ✗ Not visible |
+| `admin` | ✓ Full access | ✓ Full access |
+
+- Frontend checks `user.role` and conditionally renders Dashboard tab
+- Backend validates role on all dashboard API endpoints (403 if unauthorized)
+
+---
+
+## 9. Success Criteria
 
 | Criteria | Measurement |
 |----------|-------------|
@@ -1142,5 +1193,5 @@ This enables true extensibility where adding a new tool doesn't require touching
 ---
 
 *Document Version: 1.0*  
-*Last Updated: December 2024*
+*Last Updated: December 2026*
 
