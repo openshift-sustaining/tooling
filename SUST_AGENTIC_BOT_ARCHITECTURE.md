@@ -19,7 +19,7 @@ The **OCP Sustaining Agentic Bot** is an extensible, AI-powered assistant design
 
 ![OCP Sustaining Bot - Architecture](./architecture.png)
 
-*High-level architecture showing Frontend (Chat + Dashboard), Backend (Orchestrator, State, Tools), External Services, and Central Database*
+*High-level architecture showing separate Frontend applications (Chat App, Dashboard App), shared Backend (Orchestrator, State, Tools), External Services, and Central Database*
 
 ---
 
@@ -998,26 +998,11 @@ UI Rendering by Status:
 | **Backend Framework** | Python + FastAPI | Native async support, automatic Pydantic validation, WebSocket built-in, excellent for AI/ML integrations |
 | **Real-time Communication** | WebSocket (native) | Bidirectional streaming required for thinking/progress updates, lower latency than polling |
 | **LLM Provider** | Any LLM with function calling (e.g., Gemini, OpenAI, Claude, Ollama) | Configurable; requires structured output and function calling support |
-| **Active Session Store** | In-memory (Python dict) | Fast during execution; no DB latency for active sessions |
-| **Persistent Database** | SQLite (dev) / PostgreSQL (prod) | SQLite for local dev (zero config), PostgreSQL for multi-pod production |
+| **Active Session Store** | In-memory (Pydantic model / Python dict) | Fast during execution; no DB latency for active sessions |
+| **Persistent Database** | SQLite (dev) / PostgreSQL (prod) | SQLite for local dev (zero config), PostgreSQL for multi-container production |
 | **ORM** | SQLAlchemy | Supports both SQLite and PostgreSQL with same codebase |
 | **Containerization** | Docker | Portable, consistent environments across dev/staging/prod |
-| **Reverse Proxy** | Nginx | SSL termination, auth header injection, static file serving, WebSocket proxying |
 | **Orchestration** | Docker Compose (dev) / Kubernetes (prod) | Simple local dev, scalable production deployment |
-
-### 7.2 Why No LangGraph
-
-**Why we avoid LangGraph (or similar fixed graph frameworks):**
-
-| Aspect | LangGraph (Fixed) | Our Approach (Dynamic) |
-|--------|-------------------|------------------------|
-| Workflow definition | Hardcoded edges in code | LLM generates at runtime |
-| Adding new tool | Modify graph edges manually | Just register tool, no graph changes |
-| Handling new user intents | Requires code changes | LLM adapts automatically |
-| Error recovery | Predefined retry paths | LLM suggests alternatives |
-| Maintenance burden | Graph complexity grows | Tool registry stays flat |
-
-This enables true extensibility where adding a new tool doesn't require touching orchestration code.
 
 ---
 
@@ -1029,7 +1014,7 @@ This section covers the database architecture for storing session history, feedb
 
 | Phase | Storage | Purpose |
 |-------|---------|---------|
-| **Active Session** | In-memory (Python dict/object) | Fast read/write during execution |
+| **Active Session** | In-memory (Pydantic model / Python dict) | Fast read/write during execution |
 | **Session End** | Push to Database | Persist for dashboard & analytics |
 | **Dashboard Query** | Read from Database | Historical view & reporting |
 
@@ -1060,7 +1045,7 @@ DATABASE_CONFIG {
 | Mode | Database | Use Case |
 |------|----------|----------|
 | **Local/Dev** | SQLite | Single developer, quick setup, file-based |
-| **Production** | PostgreSQL | Multi-pod deployment, concurrent access, scalable |
+| **Production** | PostgreSQL | Multi-container deployment, concurrent access, scalable |
 
 ### 8.3 Data Model
 
@@ -1076,24 +1061,26 @@ Core entities stored in the database:
 
 > **Note:** Detailed schemas, entity relationships, and archival flows are documented separately in the Database Design Document.
 
-### 8.4 Multi-Pod Architecture
+### 8.4 Scalable Architecture
 
-For production deployments where each session runs in a separate backend pod:
+For production deployments where each session runs in a separate backend container:
 
-- **Frontend**: Single React app with Chat and Dashboard tabs
-- **Backend Pods**: One per active session, state held in-memory
-- **Central Database**: PostgreSQL pod for persistent storage
+- **Chat App**: Standalone React app for user interactions (WebSocket → Backend)
+- **Dashboard App**: Standalone React app for admin analytics (REST API → Backend/DB)
+- **Backend Containers**: One per active session, state held in-memory, serves both apps
+- **Central Database**: PostgreSQL container for persistent storage
 - **Session Archival**: On session end, data pushed to central DB
 
 ### 8.5 Dashboard Access Control
 
-| Role | Chat Access | Dashboard Access |
-|------|-------------|------------------|
-| `user` | ✓ Full access | ✗ Not visible |
+| Role | Chat App | Dashboard App |
+|------|----------|---------------|
+| `user` | ✓ Full access | ✗ No access |
 | `admin` | ✓ Full access | ✓ Full access |
 
-- Frontend checks `user.role` and conditionally renders Dashboard tab
+- Dashboard App requires authentication with admin role
 - Backend validates role on all dashboard API endpoints (403 if unauthorized)
+- Separate deployments allow different access policies per app
 
 ---
 
