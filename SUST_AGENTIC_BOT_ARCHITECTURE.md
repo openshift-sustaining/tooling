@@ -1,5 +1,5 @@
 # OCP Sustaining Agentic Bot
-## Architecture & Low-Level Design Document
+## Architecture & Medium-Level Design Document
 
 ---
 
