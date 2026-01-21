@@ -286,6 +286,15 @@ ToolRegistry {
 - Product name
 - Custom CSS injection point
 
+**6. Dashboard App (Separate Application - Admin Only)**
+- Session History Table: Time, request, status, rating, duration, tools used
+- Summary Stats Cards: Total sessions, success rate, avg rating, avg duration
+- Tool Performance Chart: Success rate per tool (horizontal bar)
+- Feedback Distribution: Star rating breakdown (5★ to 1★)
+- Recent Feedback List: 👍/👎 with comments and tool context
+- Date Filters: Last 7 days, Last 30 days, All time
+- User Authentication: Admin role required for access
+
 #### 3.3.3 Branding Configuration Schema
 
 ```
