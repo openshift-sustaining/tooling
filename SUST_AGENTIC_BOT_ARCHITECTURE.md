@@ -960,7 +960,185 @@ UI Rendering by Status:
 
 ---
 
-## 6. Security Considerations
+## 6. Async API (Headless Mode)
+
+This section covers the REST API for programmatic access, enabling automation, CI/CD pipelines, and external system integration without requiring a UI.
+
+### 6.1 Use Cases
+
+| Use Case | Description |
+|----------|-------------|
+| **CI/CD Pipelines** | Automated CVE checks on PR or scheduled basis |
+| **Batch Jobs** | Scheduled scans across multiple repositories |
+| **JIRA Integration** | Trigger analysis from ticket creation |
+| **External Automation** | Any system that needs programmatic access |
+
+### 6.2 API Endpoints
+
+#### 6.2.1 Submit Query
+
+```
+POST /api/v1/queries
+Authorization: Bearer <api_key>
+
+Request:
+{
+    "prompt": "Analyze CVE-2024-24786 for openshift/cluster-nfd-operator",
+    "auto_approve": true,
+    "auto_approve_risk_levels": ["low", "medium", "high"],
+    "exclude_tools": ["create_pr"],        // Optional: require manual for specific tools
+    "callback_url": "https://...",         // Optional: webhook on completion
+    "timeout_seconds": 600
+}
+
+Response:
+{
+    "query_id": "q-abc123",
+    "status": "queued",
+    "estimated_duration": "2m 30s",
+    "poll_url": "/api/v1/queries/q-abc123"
+}
+```
+
+#### 6.2.2 Check Status (Polling)
+
+```
+GET /api/v1/queries/{query_id}
+
+Response:
+{
+    "query_id": "q-abc123",
+    "status": "running",                   // queued | running | completed | failed
+    "progress": {
+        "current_step": 3,
+        "total_steps": 6,
+        "current_tool": "assess_cve",
+        "percent_complete": 50
+    },
+    "started_at": "2024-01-15T10:30:00Z"
+}
+```
+
+#### 6.2.3 Get Result
+
+```
+GET /api/v1/queries/{query_id}/result
+
+Response:
+{
+    "query_id": "q-abc123",
+    "status": "completed",
+    "result": {
+        "summary": "Repository is vulnerable. PR created.",
+        "is_vulnerable": true,
+        "pr_url": "https://github.com/...",
+        "affected_packages": [...],
+        "fix_applied": true
+    },
+    "execution_log": [
+        {"step": "fetch_cve_data", "status": "completed", "duration_ms": 1200},
+        {"step": "clone_repository", "status": "completed", "duration_ms": 3400},
+        ...
+    ],
+    "total_duration_ms": 45000
+}
+```
+
+### 6.3 Auto-Approve Modes
+
+Since there's no UI for consent in headless mode, approval must be specified upfront:
+
+| Parameter | Description |
+|-----------|-------------|
+| `auto_approve: true` | Approve ALL steps automatically |
+| `auto_approve_risk_levels: ["low", "medium"]` | Only auto-approve specific risk levels |
+| `exclude_tools: ["create_pr"]` | Require manual approval for specific tools (hybrid) |
+
+**Fully Automated Example:**
+```json
+{
+    "prompt": "Analyze CVE-2024-1234 for repo X",
+    "auto_approve": true,
+    "auto_approve_risk_levels": ["low", "medium", "high"]
+}
+```
+
+### 6.4 Webhook vs Polling
+
+| Approach | When to Use |
+|----------|-------------|
+| **Polling** | Simple integrations, no inbound firewall issues |
+| **Webhook** | Long-running jobs, instant notification needed |
+
+Both are supported. Polling is default; webhook is optional via `callback_url`.
+
+**Webhook Payload (on completion):**
+```json
+POST {callback_url}
+{
+    "query_id": "q-abc123",
+    "status": "completed",
+    "result_url": "/api/v1/queries/q-abc123/result"
+}
+```
+
+### 6.5 API Authentication
+
+| Mechanism | Description |
+|-----------|-------------|
+| **API Keys** | Long-lived keys for automation (stored securely) |
+| **Scopes** | Keys can have scopes: `read`, `execute`, `execute:auto_approve` |
+| **Rate Limiting** | Prevent abuse (e.g., 10 queries/hour per key) |
+| **Audit Logging** | All API calls logged with key ID for traceability |
+
+### 6.6 Query Storage (DB)
+
+```
+queries {
+    id: UUID PRIMARY KEY
+    api_key_id: UUID                    // Who submitted
+    prompt: TEXT
+    auto_approve: BOOLEAN
+    auto_approve_risk_levels: TEXT[]
+    status: VARCHAR                     // queued, running, completed, failed
+    session_id: UUID                    // Links to session for execution
+    result: JSONB                       // Final output
+    callback_url: TEXT
+    created_at: TIMESTAMP
+    started_at: TIMESTAMP
+    completed_at: TIMESTAMP
+}
+```
+
+### 6.7 Example: CI/CD Integration
+
+```yaml
+# GitHub Actions Example
+- name: Check CVE
+  run: |
+    # Submit query
+    QUERY_ID=$(curl -X POST https://bot.example.com/api/v1/queries \
+      -H "Authorization: Bearer ${{ secrets.BOT_API_KEY }}" \
+      -d '{"prompt": "Check CVE-2024-1234", "auto_approve": true}' \
+      | jq -r '.query_id')
+    
+    # Poll until complete
+    while true; do
+      STATUS=$(curl -s https://bot.example.com/api/v1/queries/$QUERY_ID \
+        -H "Authorization: Bearer ${{ secrets.BOT_API_KEY }}" \
+        | jq -r '.status')
+      if [ "$STATUS" == "completed" ] || [ "$STATUS" == "failed" ]; then break; fi
+      sleep 10
+    done
+    
+    # Get result
+    curl https://bot.example.com/api/v1/queries/$QUERY_ID/result \
+      -H "Authorization: Bearer ${{ secrets.BOT_API_KEY }}"
+```
+
+---
+
+## 7. Security Considerations
 
 ### 6.1 Authentication & Authorization
 
@@ -995,9 +1173,9 @@ UI Rendering by Status:
 
 ---
 
-## 7. Technology Stack
+## 8. Technology Stack
 
-### 7.1 Stack Overview
+### 8.1 Stack Overview
 
 | Layer | Technology | Why This Choice |
 |-------|------------|-----------------|
@@ -1015,11 +1193,11 @@ UI Rendering by Status:
 
 ---
 
-## 8. Persistence Layer
+## 9. Persistence Layer
 
 This section covers the database architecture for storing session history, feedback, and analytics data.
 
-### 8.1 Storage Strategy
+### 9.1 Storage Strategy
 
 | Phase | Storage | Purpose |
 |-------|---------|---------|
@@ -1027,7 +1205,7 @@ This section covers the database architecture for storing session history, feedb
 | **Session End** | Push to Database | Persist for dashboard & analytics |
 | **Dashboard Query** | Read from Database | Historical view & reporting |
 
-### 8.2 Database Support
+### 9.2 Database Support
 
 The system supports both **SQLite** (local development) and **PostgreSQL** (production/containers) via configuration:
 
@@ -1056,7 +1234,7 @@ DATABASE_CONFIG {
 | **Local/Dev** | SQLite | Single developer, quick setup, file-based |
 | **Production** | PostgreSQL | Multi-container deployment, concurrent access, scalable |
 
-### 8.3 Data Model
+### 9.3 Data Model
 
 Core entities stored in the database:
 
@@ -1070,7 +1248,7 @@ Core entities stored in the database:
 
 > **Note:** Detailed schemas, entity relationships, and archival flows are documented separately in the Database Design Document.
 
-### 8.4 Scalable Architecture
+### 9.4 Scalable Architecture
 
 For production deployments where each session runs in a separate backend container:
 
@@ -1080,7 +1258,7 @@ For production deployments where each session runs in a separate backend contain
 - **Central Database**: PostgreSQL container for persistent storage
 - **Session Archival**: On session end, data pushed to central DB
 
-### 8.5 Dashboard Access Control
+### 9.5 Dashboard Access Control
 
 | Role | Chat App | Dashboard App |
 |------|----------|---------------|
@@ -1093,7 +1271,7 @@ For production deployments where each session runs in a separate backend contain
 
 ---
 
-## 9. Success Criteria
+## 10. Success Criteria
 
 | Criteria | Measurement |
 |----------|-------------|
