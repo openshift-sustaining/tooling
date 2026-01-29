@@ -5,7 +5,7 @@
 
 ## 1. Executive Summary
 
-The **OCP Sustaining Agentic Bot** is an extensible, AI-powered assistant designed for CVE analysis and remediation workflows. Built with a modular architecture, it enables easy onboarding of new tools/features while providing a transparent, consent-driven user experience.
+The **OCP Sustaining Agentic Bot** is an extensible, AI-powered assistant designed for team internal repeatable tasks and informational workflows. Built with a modular architecture, it enables easy onboarding of new tools/capabilities while providing a transparent, consent-driven user experience. Task execution can be accessed via both UI and API.
 
 ### Key Differentiators
 - **Transparent AI Reasoning**: Collapsible thinking/planning panel (similar to Cursor, Claude)
@@ -19,7 +19,7 @@ The **OCP Sustaining Agentic Bot** is an extensible, AI-powered assistant design
 
 ![OCP Sustaining Bot - Architecture](./architecture.png)
 
-*High-level architecture showing separate Frontend applications (Chat App, Dashboard App), shared Backend (Orchestrator, State, Tools), External Services, and Central Database*
+*High-level architecture showing separate Frontend applications (Chat App, Dashboard App), Programmatic API Access (ARC, Scripts, CI/CD, External Systems), shared Backend (Orchestrator, State, Tools), External Services, and Central Database*
 
 ---
 
@@ -111,8 +111,9 @@ for each step in plan:
 | Mode | Description |
 |------|-------------|
 | **Step-by-Step** | User approves each tool action individually |
-| **Bulk Approve** | User approves entire plan at once |
-| **Bulk Approve by Risk** | Auto-approve "low" risk, ask for "medium"/"high" |
+| **Bulk Approve All Risks** | User approves all remaining steps regardless of risk level |
+| **Bulk Approve Low Risks** | Auto-approve "low" risk steps, ask for "medium" and "high" |
+| **Bulk Approve Low & Medium Risks** | Auto-approve "low" and "medium" risk steps, ask only for "high" |
 | **Skip Confirmation** | For trusted/safe operations (user-configurable) |
 
 **Consent Request Structure**:
@@ -124,20 +125,20 @@ ConsentRequest {
     tool_name: string
     tool_description: string
     parameters_summary: string          // Human-readable parameter description
-    risk_level: string
+    risk_level: "low" | "medium" | "high"
     reversible: boolean
     timeout_seconds: number             // Auto-reject if no response
     bulk_options: {
-        approve_remaining: boolean
-        approve_same_risk: boolean
+        approve_all_risks: boolean      // Allow user to approve all remaining steps
+        approve_low_risks: boolean      // Allow user to auto-approve low risk steps
+        approve_low_medium_risks: boolean  // Allow user to auto-approve low & medium risk steps
     }
 }
 
 ConsentResponse {
     request_id: string
-    decision: "approved" | "rejected" | "modified" | "bulk_approved"
+    decision: "approved" | "rejected" | "modified" | "bulk_approve_all" | "bulk_approve_low" | "bulk_approve_low_medium"
     modified_parameters: dict | null    // If user wants to modify params
-    apply_to_remaining: boolean
     user_feedback: string | null        // Optional feedback for improvement
 }
 ```
@@ -320,7 +321,7 @@ BrandingConfig {
     
     features: {
         show_thinking_panel: boolean
-        default_consent_mode: string
+        default_consent_mode: "step_by_step" | "bulk_approve_all" | "bulk_approve_low" | "bulk_approve_low_medium" | "skip_confirmation"
         enable_feedback: boolean
     }
 }
@@ -342,7 +343,111 @@ The **Central Session State** is the single source of truth shared across all to
 | **Executor State-Awareness** | Executor checks state before making retry/skip/fail decisions |
 | **Immutable History** | Previous tool results preserved; new results append/update |
 
-#### 3.4.2 Session State Structure
+#### 3.4.2 Tool Registry ↔ State Integration
+
+The **Tool Registry configuration** is essential for safe and dynamic state management. Each tool declares its state dependencies (`state_inputs`, `state_outputs`) which the Executor uses to validate and orchestrate workflow execution.
+
+**Tool Registry Configuration for State Management:**
+
+```
+Tool Registry Entry:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Tool: assess_cve                                                           │
+│  ├── state_inputs: ["cve_id", "cloned_repo_path", "cve_details"]           │
+│  ├── state_outputs: ["is_vulnerable", "affected_packages", "is_false_alarm"]│
+│  ├── requires_consent: false                                                │
+│  ├── risk_level: "low"                                                      │
+│  ├── is_retriable: true                                                     │
+│  ├── max_retries: 2                                                         │
+│  └── retry_delay_ms: 1000                                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**How Tool Registry Drives State Management:**
+
+| Tool Config Field | State Management Role |
+|-------------------|----------------------|
+| `state_inputs` | Executor validates these fields exist in `state.data` before execution |
+| `state_outputs` | Executor verifies these fields are updated in `state.data` after execution |
+| `requires_consent` | Determines if `pending_consent` is populated before execution |
+| `risk_level` | Used with `consent_mode` to determine if consent is auto-approved |
+| `is_retriable` | Executor checks this before attempting retry on failure |
+| `max_retries` | Compared against `state.data.retry_count` to decide retry vs. abort |
+| `retry_delay_ms` | Executor waits this duration before retry attempt |
+
+**Pre-Execution Validation Flow:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    PRE-EXECUTION VALIDATION                                  │
+│                                                                              │
+│  1. Executor reads tool.state_inputs from Tool Registry                     │
+│     └── ["cve_id", "cloned_repo_path", "cve_details"]                       │
+│                                                                              │
+│  2. Executor checks each input exists in state.data                         │
+│     ├── state.data.cve_id         → ✓ present                              │
+│     ├── state.data.cloned_repo_path → ✓ present                            │
+│     └── state.data.cve_details    → ✓ present                              │
+│                                                                              │
+│  3. If any input missing:                                                   │
+│     ├── Log warning with missing fields                                     │
+│     ├── Check if upstream tool can provide it                               │
+│     └── Skip step OR request Planner to re-sequence                        │
+│                                                                              │
+│  4. If all inputs present:                                                  │
+│     └── Proceed to consent check (if tool.requires_consent = true)         │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Consent Decision Based on Tool Registry + State:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    CONSENT DECISION MATRIX                                   │
+│                                                                              │
+│  Tool Registry:  tool.requires_consent = true                               │
+│                  tool.risk_level = "medium"                                 │
+│                                                                              │
+│  Session State:  state.consent_mode = "bulk_approve_low"                    │
+│                                                                              │
+│  Decision Logic:                                                            │
+│  ├── If consent_mode == "skip_confirmation" → auto-approve                 │
+│  ├── If consent_mode == "bulk_approve_all" → auto-approve                  │
+│  ├── If consent_mode == "bulk_approve_low" AND risk == "low" → auto-approve│
+│  ├── If consent_mode == "bulk_approve_low_medium" AND risk ∈ [low,medium]  │
+│  │   → auto-approve                                                         │
+│  └── Otherwise → populate state.pending_consent, wait for user response    │
+│                                                                              │
+│  Result: risk_level="medium" + consent_mode="bulk_approve_low"              │
+│          → Requires explicit user consent                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Post-Execution State Update Verification:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    POST-EXECUTION VERIFICATION                               │
+│                                                                              │
+│  1. Tool completes execution                                                │
+│                                                                              │
+│  2. Executor reads tool.state_outputs from Tool Registry                    │
+│     └── ["is_vulnerable", "affected_packages", "is_false_alarm"]            │
+│                                                                              │
+│  3. Executor verifies state.data was updated:                               │
+│     ├── state.data.is_vulnerable    → ✓ updated (true)                     │
+│     ├── state.data.affected_packages → ✓ updated ([...])                   │
+│     └── state.data.is_false_alarm   → ✓ updated (false)                    │
+│                                                                              │
+│  4. Record in tool_results:                                                 │
+│     └── state.tool_results[step_id] = { success: true, ... }               │
+│                                                                              │
+│  5. Check for state-triggered workflow changes:                             │
+│     └── If state.data.is_false_alarm == true → skip remediation steps      │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 3.4.3 Session State Structure
 
 ```
 SessionState {
@@ -410,7 +515,7 @@ SessionState {
 }
 ```
 
-#### 3.4.3 Tool ↔ State Interaction Pattern
+#### 3.4.4 Tool ↔ State Interaction Pattern
 
 Every tool follows this pattern:
 
@@ -444,7 +549,7 @@ Every tool follows this pattern:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### 3.4.4 Executor State-Aware Decision Making
+#### 3.4.5 Executor State-Aware Decision Making
 
 The Executor uses current state to make intelligent decisions:
 
@@ -475,7 +580,7 @@ The Executor uses current state to make intelligent decisions:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Decision Matrix:**
+**Decision Matrix (Sample - Not Exhaustive):**
 
 | Condition | Source | Executor Decision |
 |-----------|--------|-------------------|
@@ -485,6 +590,8 @@ The Executor uses current state to make intelligent decisions:
 | `state.is_false_alarm == true` | State | Skip remediation steps, go to summary |
 | `state.fix_available == false` | State | Skip apply_fix, generate "no fix" report |
 | `state.test_success == false` AND retriable | Tool Registry + State | Retry with Planner guidance |
+
+*Note: This matrix illustrates common decision patterns. Actual decision logic will vary based on the specific tools and workflows configured.*
 
 **Data Source Clarification:**
 
@@ -497,7 +604,7 @@ The Executor uses current state to make intelligent decisions:
 | `last_error` | State | Error message from last failure |
 | `last_error_step` | State | Step ID that last failed |
 
-#### 3.4.5 State Change Notifications
+#### 3.4.6 State Change Notifications
 
 When state changes, the Executor can notify the Planner for adaptive re-planning:
 
@@ -514,57 +621,67 @@ Executor action:
   3. Notify frontend: "CVE already patched, skipping remediation"
 ```
 
-#### 3.4.6 Global State
+#### 3.4.7 Configuration vs. Database Storage
 
+The system separates **application configuration** (static, loaded at startup) from **database storage** (dynamic, persisted for analytics/audit).
+
+**Application Configuration (Loaded at Startup):**
 ```
-GlobalState {
-    // Tool Registry
-    registered_tools: Map<tool_name, Tool>
+App Config (config files / environment):
+├── tool_registry.yaml       // Tool definitions, state_inputs/outputs, retry policies
+├── branding_config.yaml     // White-label theming, logos, colors
+├── llm_config.yaml          // LLM provider, model, API keys
+└── system_config.yaml       // Feature flags, timeouts, defaults
+```
+
+**Database (Lightweight - Historical Data Only):**
+```
+Database Tables:
+├── sessions                 // Completed session metadata and final state
+├── session_messages         // Conversation history (for completed sessions)
+├── session_steps            // Plan steps and their execution status
+├── session_tool_results     // Tool execution history (for completed sessions)
+└── feedback                 // User feedback records
+```
+
+**Runtime State (In-Memory):**
+```
+RuntimeState {
+    // Loaded from app config at startup
+    tool_registry: Map<tool_name, Tool>
     tool_capability_index: Map<keyword, tool_name[]>
-    
-    // Active Sessions
-    active_sessions: Map<session_id, SessionState>
-    
-    // System Configuration
     branding_config: BrandingConfig
     llm_config: LLMConfig
+    
+    // Active sessions (in-memory only until completed)
+    active_sessions: Map<session_id, SessionState>
 }
 ```
 
----
+**Storage Strategy:**
 
-### 3.5 Communication Protocol
+| Data | Source | Stored In | Reason |
+|------|--------|-----------|--------|
+| Tool definitions | App config | Memory (loaded at startup) | Static config, no need for DB overhead |
+| Branding config | App config | Memory (loaded at startup) | Static config, changes require redeploy |
+| LLM config | App config | Memory (loaded at startup) | Static config with secrets |
+| Active sessions | Runtime | Memory only | Lightweight, lost on crash (acceptable) |
+| Completed sessions | Runtime → DB | Database | Historical data for Dashboard/analytics |
+| Feedback | User input → DB | Database | Persistent for analysis and improvement |
 
-#### 3.5.1 WebSocket Message Types
-
-**Frontend → Backend:**
-| Type | Purpose | Payload |
-|------|---------|---------|
-| `chat` | User sends message | `{content: string}` |
-| `consent_response` | User approves/rejects | `ConsentResponse` |
-| `cancel_execution` | Stop current plan | `{plan_id: string}` |
-| `ping` | Connection keepalive | `{}` |
-
-**Backend → Frontend:**
-| Type | Purpose | Payload |
-|------|---------|---------|
-| `thinking_update` | Reasoning stream | `{step: string, details: string}` |
-| `plan_created` | Full plan generated | `Plan` |
-| `consent_request` | Ask for approval | `ConsentRequest` |
-| `step_started` | Tool execution began | `{step_id, tool_name}` |
-| `step_progress` | Execution progress | `{step_id, progress: string}` |
-| `step_completed` | Tool finished | `{step_id, result: ToolResult}` |
-| `plan_completed` | All steps done | `{plan_id, summary}` |
-| `error` | Something failed | `{message, recoverable}` |
-| `capability_unavailable` | Can't do request | `{message, suggestions}` |
+**Session Persistence Strategy:**
+- Active sessions are kept in memory only during execution
+- Session state written to DB only when session is **completed** (success or failure)
+- In-progress sessions are not persisted (lost on server crash - acceptable trade-off for simplicity)
+- Completed sessions in DB available for Dashboard analytics and audit
 
 ---
 
-### 3.6 Feedback System
+### 3.5 Feedback System
 
 The feedback system is designed to be **non-blocking** and **lightweight** - it should never slow down execution or interrupt user experience.
 
-#### 3.6.1 Design Principles
+#### 3.5.1 Design Principles
 
 | Principle | Description |
 |-----------|-------------|
@@ -573,7 +690,7 @@ The feedback system is designed to be **non-blocking** and **lightweight** - it 
 | **No Analytics Dashboard** | No separate admin UI; feedback accessed via bot tool |
 | **On-Demand Insights** | Users query feedback stats by asking the bot directly |
 
-#### 3.6.2 Feedback Collection Points
+#### 3.5.2 Feedback Collection Points
 
 | Point | UI Element | Behavior |
 |-------|------------|----------|
@@ -603,7 +720,7 @@ The feedback system is designed to be **non-blocking** and **lightweight** - it 
        ↑ Appears for 5 seconds, then auto-hides if ignored
 ```
 
-#### 3.6.3 Feedback Data Structure
+#### 3.5.3 Feedback Data Structure
 
 ```
 Feedback {
@@ -624,7 +741,7 @@ Feedback {
 }
 ```
 
-#### 3.6.4 Non-Blocking Submission Flow
+#### 3.5.4 Non-Blocking Submission Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -654,24 +771,28 @@ Feedback {
 ```
 
 
-#### 3.6.6 Feedback Storage
+#### 3.5.5 Feedback Storage
 
+Feedback follows the same persistence strategy as session state:
+
+| Phase | Storage | Notes |
+|-------|---------|-------|
+| During active session | In-memory (part of SessionState) | Feedback collected as user interacts |
+| On session completion | Written to DB | Persisted along with session data |
+
+**SessionState.feedback:**
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         FEEDBACK STORAGE                                     │
-│                                                                              │
-│   ┌────────────────┐     ┌────────────────┐     ┌────────────────────────┐ │
-│   │  WebSocket     │────>│  Background    │────>│  Database              │ │
-│   │  Event         │     │  Queue         │     │  (Postgres/SQLite)     │ │
-│   │  (feedback)    │     │  (in-memory)   │     │                        │ │
-│   └────────────────┘     └────────────────┘     └────────────────────────┘ │
-│         │                       │                         │                 │
-│         │                       │                         │                 │
-│    Fire & forget          Batch writes              Persisted for           │
-│    (no blocking)          (every 5 sec)             tool queries            │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+SessionState {
+    ...
+    feedback: {
+        step_ratings: Map<step_id, "positive" | "negative">
+        session_rating: number | null        // 1-5 stars
+        comments: string[]                   // Optional user comments
+    }
+}
 ```
+
+On session completion, feedback is persisted to the `feedback` table in DB and available for the `fetch_feedback_insights` tool to query.
 
 
 ## 4. Dynamic Workflow Architecture
@@ -739,254 +860,108 @@ Planner: {
 
 ---
 
-## 5. Real-Time Communication
+## 5. Communication & API
 
-This section covers the technical details of how frontend and backend interact dynamically during tool execution.
+This section consolidates all communication protocols and interfaces for the bot.
 
-### 5.1 Connection Architecture
+### 5.1 Protocol Summary
 
-```
-┌─────────────┐                              ┌─────────────┐
-│   FRONTEND  │                              │   BACKEND   │
-│   (React)   │◄────── WebSocket ──────────►│  (FastAPI)  │
-└─────────────┘      Persistent Conn         └─────────────┘
-
-Connection Flow:
-1. HTTP POST /sessions → returns session_id
-2. WebSocket connect /ws/{session_id}
-3. Bidirectional message stream until disconnect
-```
-
-**Why WebSocket (not REST/Polling)?**
-| Approach | Latency | Server Push | Overhead |
-|----------|---------|-------------|----------|
-| REST Polling | 1-5s | No | High (repeated requests) |
-| WebSocket | <100ms | Yes | Low (single connection) |
-
-### 5.2 Message Protocol
-
-All messages are JSON with `type` field for routing:
-
-**Frontend → Backend:**
-| Type | When Sent | Payload |
-|------|-----------|---------|
-| `chat` | User sends message | `{content: "..."}` |
-| `consent_response` | User approves/rejects | `{step_id, decision: "approved"/"rejected"}` |
-| `cancel_execution` | User cancels | `{plan_id}` |
-| `pong` | Response to ping | `{}` |
-
-**Backend → Frontend:**
-| Type | When Sent | Payload |
-|------|-----------|---------|
-| `thinking_update` | During planning | `{step: "Analyzing intent..."}` |
-| `plan_created` | Plan ready | `{plan: {steps: [...]}}` |
-| `consent_request` | Before risky step | `{step_id, tool_name, risk_level}` |
-| `step_started` | Tool begins | `{step_id, tool_name}` |
-| `step_progress` | During execution | `{step_id, progress: "..."}` |
-| `step_completed` | Tool finishes | `{step_id, success, result/error}` |
-| `error` | On failure | `{message, recoverable}` |
-| `ping` | Every 30s | `{}` (keepalive) |
-
-### 5.3 Execution Flow with Messages
-
-```
-USER sends message
-        │
-        ▼
-FRONTEND: ws.send({type: "chat", content: "..."})
-          setState({status: "thinking"})
-        │
-        ▼
-BACKEND:  Planner calls LLM (streaming)
-          For each chunk → ws.send({type: "thinking_update", step: "..."})
-        │
-        ▼
-FRONTEND: onMessage → appendToThinkingPanel(data.step)
-        │
-        ▼
-BACKEND:  ws.send({type: "plan_created", plan: {...}})
-        │
-        ▼
-FRONTEND: setPlanSteps(data.plan.steps) → render plan view
-        │
-        ▼ (for each step)
-BACKEND:  ws.send({type: "consent_request", step_id: "step_1", ...})
-          await waitForConsentResponse()  ← PAUSES HERE
-        │
-        ▼
-FRONTEND: showConsentBar()
-          User clicks [Approve]
-          ws.send({type: "consent_response", step_id: "step_1", decision: "approved"})
-        │
-        ▼
-BACKEND:  consent received → resume execution
-          ws.send({type: "step_started", step_id: "step_1"})
-          
-          // During tool execution:
-          ws.send({type: "step_progress", step_id: "step_1", progress: "Cloning repo..."})
-          ws.send({type: "step_progress", step_id: "step_1", progress: "Analyzing go.mod..."})
-          
-          // On completion:
-          ws.send({type: "step_completed", step_id: "step_1", success: true})
-        │
-        ▼
-FRONTEND: onMessage → update step status in UI (pending → running → done)
-```
-
-### 5.4 Backend: Executor Progress Streaming
-
-```
-execute_step(step, state, session_id):
-    
-    # Notify frontend: step starting
-    send_to_frontend(session_id, {
-        type: "step_started",
-        step_id: step.id,
-        tool_name: step.tool
-    })
-    
-    # Tool execution with progress callback
-    def on_progress(message):
-        send_to_frontend(session_id, {
-            type: "step_progress",
-            step_id: step.id,
-            progress: message
-        })
-    
-    result = tool.execute(state, progress_callback=on_progress)
-    
-    # Notify frontend: step completed
-    send_to_frontend(session_id, {
-        type: "step_completed",
-        step_id: step.id,
-        success: result.success,
-        error: result.error
-    })
-    
-    return result
-```
-
-### 5.5 Backend: Consent Wait Mechanism
-
-```
-wait_for_consent(session_id, step_id):
-    
-    # Create event to wait on
-    pending_consents[session_id] = Event()
-    
-    # Send request to frontend
-    send_to_frontend(session_id, {
-        type: "consent_request",
-        step_id: step_id,
-        tool_name: ...,
-        risk_level: ...
-    })
-    
-    # Block until frontend responds
-    pending_consents[session_id].wait()
-    
-    return consent_decisions[session_id]
-
-
-# When consent_response message received:
-handle_consent_response(session_id, decision):
-    consent_decisions[session_id] = decision
-    pending_consents[session_id].set()  # Unblock wait
-```
-
-### 5.6 Frontend: State-Based UI Updates
-
-```
-WebSocket message handler:
-
-onMessage(data):
-    switch(data.type):
-        
-        case "thinking_update":
-            setThinkingLog(prev => [...prev, data.step])
-            // UI: Thinking panel shows new line
-            
-        case "plan_created":
-            setPlanSteps(data.plan.steps.map(s => ({...s, status: "pending"})))
-            // UI: Plan view appears with all steps pending
-            
-        case "consent_request":
-            setConsentRequest(data)
-            // UI: Consent bar slides in
-            
-        case "step_started":
-            updateStepStatus(data.step_id, "running")
-            // UI: Step shows spinner, highlight
-            
-        case "step_progress":
-            appendProgressLog(data.step_id, data.progress)
-            // UI: Progress text appears under step
-            
-        case "step_completed":
-            updateStepStatus(data.step_id, data.success ? "done" : "failed")
-            // UI: Step shows ✓ or ✗, spinner removed
-```
-
-### 5.7 UI State Machine
-
-```
-Step Status Flow:
-
-  pending ──────► running ──────► done
-     │               │              
-     │               └────────► failed
-     │
-     └──► skipped (if state.data indicates not needed)
-
-
-UI Rendering by Status:
-┌──────────┬────────────────────────────────────────┐
-│ pending  │ ○ Step name (gray)                     │
-│ running  │ ◉ Step name (blue) + spinner + logs   │
-│ done     │ ✓ Step name (green)                   │
-│ failed   │ ✗ Step name (red) + error message     │
-│ skipped  │ ⊘ Step name (gray, strikethrough)     │
-└──────────┴────────────────────────────────────────┘
-```
-
-### 5.8 Connection Resilience
-
-| Mechanism | Purpose |
-|-----------|---------|
-| **Heartbeat (ping/pong)** | Detect dead connections; prevent proxy timeouts (every 30s) |
-| **Reconnection** | Frontend auto-reconnects on disconnect; resumes session |
-| **Message Queue** | Backend queues messages if send fails; retries on reconnect |
-| **Session Persistence** | State stored server-side; survives brief disconnects |
+| Client | Protocol | Format | Auth | Use Case |
+|--------|----------|--------|------|----------|
+| Chat App | WebSocket (WSS) | JSON messages | Session token | Real-time interactive chat |
+| Dashboard App | REST/HTTPS | JSON | Session token | View sessions, analytics, feedback |
+| API Clients (ARC, Scripts, CI/CD) | REST/HTTPS | JSON | API key (Bearer) | Programmatic automation |
+| Backend → LLM Provider | REST/HTTPS | OpenAI-compatible JSON | API key | Planning, tool execution |
+| Backend → External APIs | REST/HTTPS | JSON | Per-service auth | GitHub, OSV/NVD, etc. |
+| Backend → MCP Servers | MCP Protocol (stdio/HTTP) | JSON-RPC 2.0 | N/A (local) | Browser, Files, JIRA |
 
 ---
 
-## 6. Async API (Headless Mode)
+### 5.2 Chat App (WebSocket)
 
-This section covers the REST API for programmatic access, enabling automation, CI/CD pipelines, and external system integration without requiring a UI.
+Real-time bidirectional communication for interactive chat experience.
 
-### 6.1 Use Cases
+**Protocol:** `wss://<host>/ws/{session_id}`
 
-| Use Case | Description |
-|----------|-------------|
-| **CI/CD Pipelines** | Automated CVE checks on PR or scheduled basis |
-| **Batch Jobs** | Scheduled scans across multiple repositories |
-| **JIRA Integration** | Trigger analysis from ticket creation |
-| **External Automation** | Any system that needs programmatic access |
+**Connection Flow:**
+1. `POST /api/v1/sessions` → returns `session_id`
+2. WebSocket connect to `/ws/{session_id}`
+3. Bidirectional message stream until disconnect
 
-### 6.2 API Endpoints
+**Chat App → Backend:**
 
-#### 6.2.1 Submit Query
+| Type | Purpose | Payload |
+|------|---------|---------|
+| `chat` | User sends message | `{content: string}` |
+| `consent_response` | User approves/rejects | `ConsentResponse` |
+| `cancel_execution` | Stop current plan | `{plan_id}` |
+| `pong` | Response to ping | `{}` |
+
+**Backend → Chat App:**
+
+| Type | Purpose | Payload |
+|------|---------|---------|
+| `thinking_update` | Reasoning stream | `{step: string}` |
+| `plan_created` | Plan ready | `{plan: Plan}` |
+| `consent_request` | Ask for approval | `ConsentRequest` |
+| `step_started` | Tool begins | `{step_id, tool_name}` |
+| `step_progress` | During execution | `{step_id, progress: string}` |
+| `step_completed` | Tool finishes | `{step_id, success, result/error}` |
+| `plan_completed` | All steps done | `{plan_id, summary}` |
+| `error` | On failure | `{message, recoverable}` |
+| `ping` | Keepalive (every 30s) | `{}` |
+
+**Connection Resilience:**
+
+| Mechanism | Purpose |
+|-----------|---------|
+| Heartbeat (ping/pong) | Detect dead connections; prevent proxy timeouts |
+| Reconnection | Frontend auto-reconnects on disconnect; resumes session |
+
+---
+
+### 5.3 Dashboard App (REST)
+
+Standard REST API for admin dashboard to view historical data.
+
+**Base URL:** `https://<host>/api/v1`
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `GET` | `/sessions` | List completed sessions (with filters) |
+| `GET` | `/sessions/{id}` | Get session details |
+| `GET` | `/feedback` | Get feedback records |
+| `GET` | `/analytics/summary` | Aggregated metrics |
+
+---
+
+### 5.4 Programmatic API (REST)
+
+For automation, CI/CD pipelines, ARC, and external system integration.
+
+**Base URL:** `https://<host>/api/v1`
+
+**Authentication:** `Authorization: Bearer <api_key>`
+
+#### Endpoints
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/queries` | Submit new query |
+| `GET` | `/queries/{id}` | Check status (polling) |
+| `GET` | `/queries/{id}/result` | Get final result |
+| `GET` | `/tools` | List available tools |
+| `GET` | `/health` | Health check |
+
+#### Submit Query
 
 ```
 POST /api/v1/queries
-Authorization: Bearer <api_key>
 
 Request:
 {
     "prompt": "Analyze CVE-2024-24786 for openshift/cluster-nfd-operator",
-    "auto_approve": true,
-    "auto_approve_risk_levels": ["low", "medium", "high"],
-    "exclude_tools": ["create_pr"],        // Optional: require manual for specific tools
+    "consent_mode": "bulk_approve_all",    // or bulk_approve_low, bulk_approve_low_medium
     "callback_url": "https://...",         // Optional: webhook on completion
     "timeout_seconds": 600
 }
@@ -995,12 +970,11 @@ Response:
 {
     "query_id": "q-abc123",
     "status": "queued",
-    "estimated_duration": "2m 30s",
     "poll_url": "/api/v1/queries/q-abc123"
 }
 ```
 
-#### 6.2.2 Check Status (Polling)
+#### Check Status
 
 ```
 GET /api/v1/queries/{query_id}
@@ -1012,14 +986,12 @@ Response:
     "progress": {
         "current_step": 3,
         "total_steps": 6,
-        "current_tool": "assess_cve",
-        "percent_complete": 50
-    },
-    "started_at": "2024-01-15T10:30:00Z"
+        "current_tool": "assess_cve"
+    }
 }
 ```
 
-#### 6.2.3 Get Result
+#### Get Result
 
 ```
 GET /api/v1/queries/{query_id}/result
@@ -1032,49 +1004,20 @@ Response:
         "summary": "Repository is vulnerable. PR created.",
         "is_vulnerable": true,
         "pr_url": "https://github.com/...",
-        "affected_packages": [...],
-        "fix_applied": true
+        "affected_packages": [...]
     },
     "execution_log": [
         {"step": "fetch_cve_data", "status": "completed", "duration_ms": 1200},
-        {"step": "clone_repository", "status": "completed", "duration_ms": 3400},
-        ...
-    ],
-    "total_duration_ms": 45000
+        {"step": "clone_repository", "status": "completed", "duration_ms": 3400}
+    ]
 }
 ```
 
-### 6.3 Auto-Approve Modes
+#### Webhook (Optional)
 
-Since there's no UI for consent in headless mode, approval must be specified upfront:
+If `callback_url` is provided, backend sends POST on completion:
 
-| Parameter | Description |
-|-----------|-------------|
-| `auto_approve: true` | Approve ALL steps automatically |
-| `auto_approve_risk_levels: ["low", "medium"]` | Only auto-approve specific risk levels |
-| `exclude_tools: ["create_pr"]` | Require manual approval for specific tools (hybrid) |
-
-**Fully Automated Example:**
 ```json
-{
-    "prompt": "Analyze CVE-2024-1234 for repo X",
-    "auto_approve": true,
-    "auto_approve_risk_levels": ["low", "medium", "high"]
-}
-```
-
-### 6.4 Webhook vs Polling
-
-| Approach | When to Use |
-|----------|-------------|
-| **Polling** | Simple integrations, no inbound firewall issues |
-| **Webhook** | Long-running jobs, instant notification needed |
-
-Both are supported. Polling is default; webhook is optional via `callback_url`.
-
-**Webhook Payload (on completion):**
-```json
-POST {callback_url}
 {
     "query_id": "q-abc123",
     "status": "completed",
@@ -1082,47 +1025,26 @@ POST {callback_url}
 }
 ```
 
-### 6.5 API Authentication
+#### API Authentication
 
 | Mechanism | Description |
 |-----------|-------------|
-| **API Keys** | Long-lived keys for automation (stored securely) |
-| **Scopes** | Keys can have scopes: `read`, `execute`, `execute:auto_approve` |
-| **Rate Limiting** | Prevent abuse (e.g., 10 queries/hour per key) |
-| **Audit Logging** | All API calls logged with key ID for traceability |
+| **API Keys** | Long-lived keys for automation |
+| **Scopes** | `read`, `execute`, `execute:auto_approve` |
+| **Rate Limiting** | Prevent abuse (configurable) |
+| **Audit Logging** | All API calls logged with key ID |
 
-### 6.6 Query Storage (DB)
-
-```
-queries {
-    id: UUID PRIMARY KEY
-    api_key_id: UUID                    // Who submitted
-    prompt: TEXT
-    auto_approve: BOOLEAN
-    auto_approve_risk_levels: TEXT[]
-    status: VARCHAR                     // queued, running, completed, failed
-    session_id: UUID                    // Links to session for execution
-    result: JSONB                       // Final output
-    callback_url: TEXT
-    created_at: TIMESTAMP
-    started_at: TIMESTAMP
-    completed_at: TIMESTAMP
-}
-```
-
-### 6.7 Example: CI/CD Integration
+#### Example: CI/CD Integration
 
 ```yaml
 # GitHub Actions Example
 - name: Check CVE
   run: |
-    # Submit query
     QUERY_ID=$(curl -X POST https://bot.example.com/api/v1/queries \
       -H "Authorization: Bearer ${{ secrets.BOT_API_KEY }}" \
-      -d '{"prompt": "Check CVE-2024-1234", "auto_approve": true}' \
+      -d '{"prompt": "Check CVE-2024-1234", "consent_mode": "bulk_approve_all"}' \
       | jq -r '.query_id')
     
-    # Poll until complete
     while true; do
       STATUS=$(curl -s https://bot.example.com/api/v1/queries/$QUERY_ID \
         -H "Authorization: Bearer ${{ secrets.BOT_API_KEY }}" \
@@ -1131,14 +1053,13 @@ queries {
       sleep 10
     done
     
-    # Get result
     curl https://bot.example.com/api/v1/queries/$QUERY_ID/result \
       -H "Authorization: Bearer ${{ secrets.BOT_API_KEY }}"
 ```
 
 ---
 
-## 7. Security Considerations
+## 6. Security Considerations
 
 ### 6.1 Authentication & Authorization
 
@@ -1173,9 +1094,9 @@ queries {
 
 ---
 
-## 8. Technology Stack
+## 7. Technology Stack
 
-### 8.1 Stack Overview
+### 7.1 Stack Overview
 
 | Layer | Technology | Why This Choice |
 |-------|------------|-----------------|
@@ -1193,11 +1114,11 @@ queries {
 
 ---
 
-## 9. Persistence Layer
+## 8. Persistence Layer
 
 This section covers the database architecture for storing session history, feedback, and analytics data.
 
-### 9.1 Storage Strategy
+### 8.1 Storage Strategy
 
 | Phase | Storage | Purpose |
 |-------|---------|---------|
@@ -1205,7 +1126,7 @@ This section covers the database architecture for storing session history, feedb
 | **Session End** | Push to Database | Persist for dashboard & analytics |
 | **Dashboard Query** | Read from Database | Historical view & reporting |
 
-### 9.2 Database Support
+### 8.2 Database Support
 
 The system supports both **SQLite** (local development) and **PostgreSQL** (production/containers) via configuration:
 
@@ -1234,21 +1155,21 @@ DATABASE_CONFIG {
 | **Local/Dev** | SQLite | Single developer, quick setup, file-based |
 | **Production** | PostgreSQL | Multi-container deployment, concurrent access, scalable |
 
-### 9.3 Data Model
+### 8.3 Data Model
 
 Core entities stored in the database:
 
 | Entity | Purpose |
 |--------|---------|
 | **sessions** | Session metadata, status, duration, user prompt, outputs |
+| **session_messages** | Conversation history (user and assistant messages) |
 | **session_steps** | Individual tool executions per session with status and timing |
 | **feedback** | User ratings and comments (session-level and step-level) |
 | **users** | User accounts with roles (user/admin) |
-| **tool_analytics** | Aggregated tool performance metrics |
 
 > **Note:** Detailed schemas, entity relationships, and archival flows are documented separately in the Database Design Document.
 
-### 9.4 Scalable Architecture
+### 8.4 Scalable Architecture
 
 For production deployments where each session runs in a separate backend container:
 
@@ -1258,7 +1179,7 @@ For production deployments where each session runs in a separate backend contain
 - **Central Database**: PostgreSQL container for persistent storage
 - **Session Archival**: On session end, data pushed to central DB
 
-### 9.5 Dashboard Access Control
+### 8.5 Dashboard Access Control
 
 | Role | Chat App | Dashboard App |
 |------|----------|---------------|
@@ -1271,7 +1192,7 @@ For production deployments where each session runs in a separate backend contain
 
 ---
 
-## 10. Success Criteria
+## 9. Success Criteria
 
 | Criteria | Measurement |
 |----------|-------------|
@@ -1283,6 +1204,29 @@ For production deployments where each session runs in a separate backend contain
 
 ---
 
+## 10. Cross-Functional Flow Diagram
+
+![OCP Sustaining Bot - Flow Diagram](./flow-diagram.png)
+
+*Cross-functional flow diagram showing all communication paths between Chat App, Dashboard App, API Clients, Backend components (Planner, Executor, Consent Manager, Feedback Handler), and Database with protocol labels.*
+
+**Flow Highlights:**
+
+| Entry Point | Protocol | Consent Handling | Path |
+|-------------|----------|------------------|------|
+| Chat App | WSS (WebSocket) | Interactive (wait for user) | Full flow with consent prompts |
+| API Client | REST | Auto-approve based on consent_mode | Headless execution |
+| Dashboard | REST | N/A (read-only) | Direct to Database |
+
+**Key Decision Points:**
+
+1. **Requires Consent?** → Routes to Consent Manager or proceeds directly
+2. **Auto-Approve?** → Based on session's consent_mode (bulk_approve_all, bulk_approve_low, etc.)
+3. **Success?** → Retry/Re-plan on failure, or proceed to next step
+4. **More Steps?** → Loop back to executor or complete session
+
+---
+
 *Document Version: 1.0*  
-*Last Updated: December 2026*
+*Last Updated: January 2026*
 
