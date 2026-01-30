@@ -1208,7 +1208,7 @@ For production deployments where each session runs in a separate backend contain
 
 ![OCP Sustaining Bot - Functional Flow](./representative_flow.png)
 
-*Functional flow diagram showing the complete execution flow from Clients through Backend components (Planner, Executor with Step Loop, Consent Manager, Tools, Feedback Handler) to External services (LLM, GitHub, JIRA, Database).*
+*Representative flow diagram illustrating the key execution flows for understanding. Not exhaustive, but captures the important interactions between Clients, Backend components (Planner, Executor, Consent Manager, Tools, Feedback Handler), and External services.*
 
 **Flow Summary:**
 
