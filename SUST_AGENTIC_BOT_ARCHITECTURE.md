@@ -17,7 +17,7 @@ The **OCP Sustaining Agentic Bot** is an extensible, AI-powered assistant design
 
 ## 2. High-Level Architecture
 
-![OCP Sustaining Bot - Architecture](./architecture.png)
+![OCP Sustaining Bot - Architecture](./architecture.png?v=2)
 
 *High-level architecture showing separate Frontend applications (Chat App, Dashboard App), Programmatic API Access (ARC, Scripts, CI/CD, External Systems), shared Backend (Orchestrator, State, Tools), External Services, and Central Database*
 
@@ -1204,26 +1204,29 @@ For production deployments where each session runs in a separate backend contain
 
 ---
 
-## 10. Cross-Functional Flow Diagram
+## 10. Functional Flow Diagram
 
-![OCP Sustaining Bot - Flow Diagram](./flow-diagram.png)
+![OCP Sustaining Bot - Functional Flow](./representative_flow.png)
 
-*Cross-functional flow diagram showing all communication paths between Chat App, Dashboard App, API Clients, Backend components (Planner, Executor, Consent Manager, Feedback Handler), and Database with protocol labels.*
+*Functional flow diagram showing the complete execution flow from Clients through Backend components (Planner, Executor with Step Loop, Consent Manager, Tools, Feedback Handler) to External services (LLM, GitHub, JIRA, Database).*
 
-**Flow Highlights:**
+**Flow Summary:**
 
-| Entry Point | Protocol | Consent Handling | Path |
-|-------------|----------|------------------|------|
-| Chat App | WSS (WebSocket) | Interactive (wait for user) | Full flow with consent prompts |
-| API Client | REST | Auto-approve based on consent_mode | Headless execution |
-| Dashboard | REST | N/A (read-only) | Direct to Database |
+| Component | Role |
+|-----------|------|
+| **Clients** | Chat App (WSS), API Client (REST), Dashboard (REST) |
+| **Planner** | Receives intent, generates Plan Steps, interacts with State and LLM |
+| **Executor** | Runs steps in loop: Get Step → Consent → Run Tool → Success/Fail |
+| **Consent Manager** | Checks consent_mode for each step before execution |
+| **Tools** | Execute against External services (GitHub, JIRA, OSV/NVD, Browser, Files) |
+| **Feedback Handler** | Collects feedback, flushes State to Database on completion |
 
-**Key Decision Points:**
+**Key Flows:**
 
-1. **Requires Consent?** → Routes to Consent Manager or proceeds directly
-2. **Auto-Approve?** → Based on session's consent_mode (bulk_approve_all, bulk_approve_low, etc.)
-3. **Success?** → Retry/Re-plan on failure, or proceed to next step
-4. **More Steps?** → Loop back to executor or complete session
+1. **Normal Flow**: Client → Planner → Executor Loop → Tools → Success → Feedback → DB
+2. **Re-plan Flow**: On failure, loops back to Planner for revised plan
+3. **Step Loop**: Executor iterates through plan steps until all complete
+4. **State Flush**: On session completion, state is persisted to Database
 
 ---
 
