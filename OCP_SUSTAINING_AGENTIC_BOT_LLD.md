@@ -175,36 +175,105 @@ class ConsentResponse(BaseModel):
 
 class SessionData(BaseModel):
     """Central data store - tool I/O"""
+
+    # ========================================
+    # CVE Remediation - Go
+    # ========================================
     # Inputs
     cve_id: Optional[str] = None
     repo_url: Optional[str] = None
     repo_version: Optional[str] = None
     cloned_repo_path: Optional[str] = None
+    are_inputs_valid: Optional[bool] = None
 
     # CVE Analysis
     cve_details: Optional[Dict[str, Any]] = None
     affected_packages: Optional[List[Dict[str, Any]]] = None
+    is_valid_go_cve: Optional[bool] = None
+    go_cve_id: Optional[str] = None
+    cvss_score: Optional[float] = None
+    cvss_severity: Optional[str] = None
     is_vulnerable: Optional[bool] = None
     is_false_alarm: Optional[bool] = None
+    analysis_incomplete: Optional[bool] = None
+    gomod_analysis: Optional[Dict[str, Any]] = None
+    code_chunks: Optional[List[Dict[str, Any]]] = None
 
     # Remediation
-    fix_available: Optional[bool] = None
+    is_fix_available: Optional[bool] = None
     fix_version: Optional[str] = None
     go_mod_updated: Optional[bool] = None
+    go_runtime_version: Optional[str] = None
     version_changes: Optional[List[Dict[str, Any]]] = None
 
     # Test Results
     build_success: Optional[bool] = None
     test_success: Optional[bool] = None
+    is_test_successful: Optional[bool] = None
+    is_test_skipped: Optional[bool] = None
+    test_skip_reason: Optional[str] = None
+    makefile_exists: Optional[bool] = None
+    last_failure_step: Optional[str] = None
+    last_failure_logs: Optional[str] = None
     test_logs: Optional[str] = None
+
+    # Failure Analysis
+    failure_analysis_response: Optional[str] = None
 
     # Output
     pr_url: Optional[str] = None
     summary: Optional[str] = None
+    final_output: Optional[str] = None
+    generated_summary: Optional[str] = None
 
+    # ========================================
+    # Documentation - Confluence
+    # ========================================
+    confluence_page_url: Optional[str] = None
+    confluence_page_title: Optional[str] = None
+    confluence_page_content: Optional[str] = None
+    confluence_page_metadata: Optional[Dict[str, Any]] = None
+    explanation_summary: Optional[str] = None
+    key_concepts: Optional[List[str]] = None
+    action_items: Optional[List[str]] = None
+    qa_response: Optional[str] = None
+    user_question: Optional[str] = None
+
+    # ========================================
+    # Project Management - Jira
+    # ========================================
+    jira_issue_key: Optional[str] = None
+    jira_issue_summary: Optional[str] = None
+    jira_issue_description: Optional[str] = None
+    jira_issue_status: Optional[str] = None
+    jira_issue_assignee: Optional[str] = None
+    jira_issue_comments: Optional[List[Dict[str, Any]]] = None
+    jira_issue_metadata: Optional[Dict[str, Any]] = None
+    jql_query: Optional[str] = None
+    jira_query_results: Optional[List[Dict[str, Any]]] = None
+    matching_issue_keys: Optional[List[str]] = None
+    issue_count: Optional[int] = None
+
+    # ========================================
+    # Quality Engineering
+    # ========================================
+    test_failure_logs: Optional[str] = None
+    failure_root_cause: Optional[str] = None
+    suggested_fixes: Optional[List[str]] = None
+    related_code_snippets: Optional[List[Dict[str, Any]]] = None
+    error_message: Optional[str] = None
+    search_query: Optional[str] = None
+    similar_issues: Optional[List[Dict[str, Any]]] = None
+    related_prs: Optional[List[Dict[str, Any]]] = None
+    known_workarounds: Optional[List[str]] = None
+
+    # ========================================
+    # Common/System
+    # ========================================
     # Error Tracking
     last_error: Optional[str] = None
     last_error_step: Optional[str] = None
+    llm_invoke_error: Optional[str] = None
     step_retry_counts: Dict[str, int] = Field(default_factory=dict)
 
 class FeedbackData(BaseModel):
@@ -1646,30 +1715,174 @@ async def health_check():
 
 ### 6.1 Tool Organization
 
+**Naming Convention:** `{purpose}_{technology}_{action}_{target}`
+
 ```
 tools/
-├── base.py                    # Base Tool class
-├── input/
-│   └── fetch_inputs.py        # Extract CVE ID, repo URL, version
-├── analysis/
-│   ├── assess_cve.py          # Fetch CVE data from multiple APIs
-│   └── false_alarm_check.py   # Analyze go.mod + code for vulnerability
-├── remediation/
-│   ├── apply_fix.py           # Update go.mod versions
-│   ├── test_fix.py            # Run tests/builds
-│   └── analyse_failure.py     # Analyze test failures
-└── output/
-    └── generate_output.py     # Generate final summary
+├── base.py                              # Base Tool class
+│
+├── cve_remediation/                     # Purpose: CVE Remediation
+│   ├── go/                              # Technology: Go
+│   │   ├── cve_go_extract_request_details.py
+│   │   ├── cve_go_fetch_vulnerability_data.py
+│   │   ├── cve_go_analyze_repository_impact.py
+│   │   ├── cve_go_update_dependencies.py
+│   │   ├── cve_go_validate_fixes.py
+│   │   ├── cve_go_diagnose_upgrade_failure.py
+│   │   └── cve_go_generate_report.py
+│   │
+│   └── python/                          # Future: Python CVE tools
+│       └── cve_python_fetch_vulnerability_data.py
+│
+├── documentation/                       # Purpose: Documentation
+│   └── confluence/                      # Technology: Confluence
+│       ├── docs_confluence_read_page.py
+│       ├── docs_confluence_explain_content.py
+│       └── docs_confluence_search_pages.py
+│
+├── project_management/                  # Purpose: Project Management
+│   └── jira/                           # Technology: Jira
+│       ├── pm_jira_fetch_issue.py
+│       ├── pm_jira_query_issues.py
+│       ├── pm_jira_get_sprint_status.py
+│       └── pm_jira_create_issue.py
+│
+└── quality_engineering/                 # Purpose: QE/Testing
+    ├── project/                        # Technology: Project-specific
+    │   ├── qe_project_analyze_test_failure.py
+    │   └── qe_project_read_documentation.py
+    └── github/                         # Technology: GitHub
+        └── qe_github_search_similar_issues.py
 ```
 
-### 6.2 Base Tool Class
+### 6.2 Tool Registry with Purpose/Technology Indexing
+
+```python
+# core/tool_registry.py
+
+from typing import Dict, List, Optional
+from tools.base import Tool
+import logging
+
+logger = logging.getLogger(__name__)
+
+class ToolRegistry:
+    """
+    Central registry for all tools with multi-dimensional indexing.
+
+    Supports:
+    - By name (unique identifier)
+    - By purpose (cve_remediation, documentation, etc.)
+    - By technology (go, python, confluence, jira, etc.)
+    - By category (internal, external)
+    """
+
+    def __init__(self):
+        self.tools: Dict[str, Tool] = {}
+
+        # Multi-dimensional indexes
+        self.purpose_index: Dict[str, List[str]] = {}      # purpose -> tool_names
+        self.technology_index: Dict[str, List[str]] = {}   # technology -> tool_names
+        self.category_index: Dict[str, List[str]] = {}     # category -> tool_names
+
+    def register(self, tool: Tool):
+        """Register tool with automatic indexing."""
+        if tool.name in self.tools:
+            logger.warning(f"Tool {tool.name} already registered, overwriting")
+
+        self.tools[tool.name] = tool
+
+        # Index by purpose
+        if tool.purpose not in self.purpose_index:
+            self.purpose_index[tool.purpose] = []
+        if tool.name not in self.purpose_index[tool.purpose]:
+            self.purpose_index[tool.purpose].append(tool.name)
+
+        # Index by technology
+        if tool.technology not in self.technology_index:
+            self.technology_index[tool.technology] = []
+        if tool.name not in self.technology_index[tool.technology]:
+            self.technology_index[tool.technology].append(tool.name)
+
+        # Index by category
+        if tool.category not in self.category_index:
+            self.category_index[tool.category] = []
+        if tool.name not in self.category_index[tool.category]:
+            self.category_index[tool.category].append(tool.name)
+
+        logger.info(f"Registered tool: {tool.name} (purpose={tool.purpose}, tech={tool.technology})")
+
+    def get_by_name(self, name: str) -> Optional[Tool]:
+        """Get tool by exact name."""
+        return self.tools.get(name)
+
+    def get_by_purpose(self, purpose: str) -> List[Tool]:
+        """Get all tools for a specific purpose."""
+        tool_names = self.purpose_index.get(purpose, [])
+        return [self.tools[name] for name in tool_names if name in self.tools]
+
+    def get_by_technology(self, technology: str) -> List[Tool]:
+        """Get all tools for a specific technology."""
+        tool_names = self.technology_index.get(technology, [])
+        return [self.tools[name] for name in tool_names if name in self.tools]
+
+    def get_by_category(self, category: str) -> List[Tool]:
+        """Get all tools in a category."""
+        tool_names = self.category_index.get(category, [])
+        return [self.tools[name] for name in tool_names if name in self.tools]
+
+    def get_all_tools(self) -> List[Tool]:
+        """Get all registered tools."""
+        return list(self.tools.values())
+
+    def get_tool_summary(self) -> Dict[str, any]:
+        """Get registry statistics."""
+        return {
+            "total_tools": len(self.tools),
+            "by_purpose": {p: len(names) for p, names in self.purpose_index.items()},
+            "by_technology": {t: len(names) for t, names in self.technology_index.items()},
+            "by_category": {c: len(names) for c, names in self.category_index.items()}
+        }
+
+    def search_tools(
+        self,
+        purpose: Optional[str] = None,
+        technology: Optional[str] = None,
+        category: Optional[str] = None
+    ) -> List[Tool]:
+        """
+        Search tools with multiple filters (AND logic).
+
+        Example:
+            search_tools(purpose="cve_remediation", technology="go")
+            Returns only Go CVE remediation tools
+        """
+        # Start with all tools
+        candidates = set(self.tools.keys())
+
+        # Apply filters
+        if purpose:
+            candidates &= set(self.purpose_index.get(purpose, []))
+
+        if technology:
+            candidates &= set(self.technology_index.get(technology, []))
+
+        if category:
+            candidates &= set(self.category_index.get(category, []))
+
+        return [self.tools[name] for name in candidates if name in self.tools]
+```
+
+---
+
+### 6.3 Base Tool Class
 
 ```python
 # tools/base.py
 
 from abc import ABC, abstractmethod
 from models.session import SessionState, ToolResult
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
 class Tool(ABC):
@@ -1681,7 +1894,10 @@ class Tool(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Tool identifier."""
+        """
+        Tool identifier following pattern: {purpose}_{technology}_{action}_{target}
+        Example: cve_go_fetch_vulnerability_data
+        """
         pass
 
     @property
@@ -1694,6 +1910,24 @@ class Tool(ABC):
     @abstractmethod
     def description(self) -> str:
         """What this tool does."""
+        pass
+
+    @property
+    @abstractmethod
+    def purpose(self) -> str:
+        """
+        Primary purpose category of this tool.
+        Examples: cve_remediation, documentation, project_management, quality_engineering
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def technology(self) -> str:
+        """
+        Technology or system this tool works with.
+        Examples: go, python, confluence, jira, github
+        """
         pass
 
     @property
@@ -1745,6 +1979,22 @@ class Tool(ABC):
         """Delay between retries (ms)."""
         return 1000
 
+    @property
+    def preferred_llm(self) -> Optional[str]:
+        """
+        Preferred LLM provider for this tool.
+
+        Returns:
+            LLM provider name from llm_config.yaml (e.g., "gemini_flash", "openai_gpt4o")
+            None means use default tool LLM
+
+        Examples:
+            - Simple extraction tasks: "gemini_flash" or "ollama_llama3"
+            - Complex analysis: "gemini_pro" or "openai_gpt4o"
+            - Code-focused tasks: "ollama_codellama"
+        """
+        return None  # Default: use system default
+
     @abstractmethod
     async def execute(
         self,
@@ -1764,12 +2014,14 @@ class Tool(ABC):
         pass
 ```
 
-### 6.3 CVE Tools Implementation
+### 6.4 Tool Implementation Examples
 
-#### 6.3.1 FetchInputs Tool
+#### 6.4.1 CVE Remediation: Go Tools
+
+##### cve_go_extract_request_details
 
 ```python
-# tools/input/fetch_inputs.py
+# tools/cve_remediation/go/cve_go_extract_request_details.py
 
 from tools.base import Tool
 from models.session import SessionState, ToolResult
@@ -1786,22 +2038,32 @@ class CVEInput(BaseModel):
     repo_url: str
     repo_version: str = "main"
 
-class FetchInputsTool(Tool):
+class CVEGoExtractRequestDetailsTool(Tool):
     def __init__(self, llm_provider: LLMProvider, config: Dict[str, Any]):
         super().__init__(config)
         self.llm = llm_provider
 
     @property
     def name(self) -> str:
-        return "fetch_inputs"
+        return "cve_go_extract_request_details"
 
     @property
     def display_name(self) -> str:
-        return "Input Extractor"
+        return "Go CVE Request Parser"
 
     @property
     def description(self) -> str:
-        return "Extracts CVE ID, repository URL, and version from user's natural language prompt"
+        return """Extracts CVE identifier, Go repository URL, and version/branch from user's
+natural language request about Go vulnerability analysis. Validates that the request is
+about analyzing a CVE for a Go repository."""
+
+    @property
+    def purpose(self) -> str:
+        return "cve_remediation"
+
+    @property
+    def technology(self) -> str:
+        return "go"
 
     @property
     def category(self) -> str:
@@ -1809,7 +2071,13 @@ class FetchInputsTool(Tool):
 
     @property
     def capabilities(self) -> List[str]:
-        return ["extract CVE", "parse repository", "understand user intent", "validate inputs"]
+        return [
+            "parse Go CVE analysis request",
+            "extract CVE identifier",
+            "extract Go repository information",
+            "validate Go vulnerability request",
+            "understand CVE remediation intent"
+        ]
 
     @property
     def state_inputs(self) -> List[str]:
@@ -1914,10 +2182,10 @@ If information is missing or ambiguous, set fields to empty string."""
             )
 ```
 
-#### 6.3.2 AssessCVE Tool
+##### cve_go_fetch_vulnerability_data
 
 ```python
-# tools/analysis/assess_cve.py
+# tools/cve_remediation/go/cve_go_fetch_vulnerability_data.py
 
 from tools.base import Tool
 from models.session import SessionState, ToolResult
@@ -1935,22 +2203,32 @@ class AffectedPackage(BaseModel):
     repo_url: Optional[str]
     affected_symbols: List[str] = []
 
-class AssessCVETool(Tool):
+class CVEGoFetchVulnerabilityDataTool(Tool):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self.http_client = httpx.AsyncClient(timeout=30.0)
 
     @property
     def name(self) -> str:
-        return "assess_cve"
+        return "cve_go_fetch_vulnerability_data"
 
     @property
     def display_name(self) -> str:
-        return "CVE Assessor"
+        return "Go CVE Data Fetcher"
 
     @property
     def description(self) -> str:
-        return "Fetches CVE data from multiple APIs (OSV, NVD, CVEORG, Bugzilla) and identifies affected Go packages with fix versions"
+        return """Fetches comprehensive CVE vulnerability data from multiple security databases
+(OSV, NVD, CVEORG, Bugzilla) specifically for Go language vulnerabilities. Identifies
+affected Go packages, fix versions, CVSS scores, and vulnerable symbols/functions."""
+
+    @property
+    def purpose(self) -> str:
+        return "cve_remediation"
+
+    @property
+    def technology(self) -> str:
+        return "go"
 
     @property
     def category(self) -> str:
@@ -1959,11 +2237,13 @@ class AssessCVETool(Tool):
     @property
     def capabilities(self) -> List[str]:
         return [
-            "fetch CVE data",
-            "validate Go vulnerability",
-            "find affected packages",
-            "identify fix versions",
-            "CVSS scoring"
+            "fetch Go CVE data from OSV",
+            "fetch Go CVE data from NVD",
+            "query Go vulnerability database",
+            "identify affected Go packages",
+            "find Go package fix versions",
+            "extract CVSS scores for Go CVEs",
+            "map vulnerable Go symbols"
         ]
 
     @property
@@ -2112,10 +2392,10 @@ class AssessCVETool(Tool):
         pass
 ```
 
-#### 6.3.3 FalseAlarmCheck Tool (Abbreviated)
+##### cve_go_analyze_repository_impact (Abbreviated)
 
 ```python
-# tools/analysis/false_alarm_check.py
+# tools/cve_remediation/go/cve_go_analyze_repository_impact.py
 
 from tools.base import Tool
 from models.session import SessionState, ToolResult
@@ -2126,7 +2406,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class FalseAlarmCheckTool(Tool):
+class CVEGoAnalyzeRepositoryImpactTool(Tool):
     """
     Analyzes go.mod and codebase to determine if CVE actually affects repository.
 
@@ -2137,15 +2417,25 @@ class FalseAlarmCheckTool(Tool):
 
     @property
     def name(self) -> str:
-        return "false_alarm_check"
+        return "cve_go_analyze_repository_impact"
 
     @property
     def display_name(self) -> str:
-        return "False Alarm Checker"
+        return "Go Repository CVE Impact Analyzer"
 
     @property
     def description(self) -> str:
-        return "Analyzes go.mod and source code to determine if CVE actually impacts the repository"
+        return """Analyzes a Go repository to determine if a CVE actually affects it by examining
+go.mod dependencies and searching source code for usage of vulnerable package symbols.
+Performs deep static analysis to detect false alarms where CVE is listed but not exploitable."""
+
+    @property
+    def purpose(self) -> str:
+        return "cve_remediation"
+
+    @property
+    def technology(self) -> str:
+        return "go"
 
     @property
     def category(self) -> str:
@@ -2154,11 +2444,12 @@ class FalseAlarmCheckTool(Tool):
     @property
     def capabilities(self) -> List[str]:
         return [
-            "analyze go.mod",
-            "check package versions",
-            "search code for symbols",
-            "determine false alarm",
-            "static analysis"
+            "analyze Go repository go.mod file",
+            "check Go package versions",
+            "search Go code for vulnerable symbols",
+            "detect CVE false alarms in Go projects",
+            "perform Go static code analysis",
+            "determine real Go CVE impact"
         ]
 
     @property
@@ -2300,29 +2591,32 @@ class FalseAlarmCheckTool(Tool):
         pass
 ```
 
-#### 6.3.4 Other CVE Tools (Summaries)
+##### Other Go CVE Tools (Summaries)
 
 ```python
-# tools/remediation/apply_fix.py
-class ApplyFixTool(Tool):
+# tools/cve_remediation/go/cve_go_update_dependencies.py
+class CVEGoUpdateDependenciesTool(Tool):
     """
-    Updates go.mod with fixed package versions.
+    Automatically updates go.mod file to fix CVE vulnerabilities.
 
     Handles:
     - Replace blocks (complex logic for version overrides)
     - Version selection (nearest higher version)
     - HARDREPLACE detection (manual intervention needed)
     """
+    name = "cve_go_update_dependencies"
+    purpose = "cve_remediation"
+    technology = "go"
     state_inputs = ["cloned_repo_path", "affected_packages"]
     state_outputs = ["go_mod_updated", "version_changes", "go_runtime_version"]
     requires_consent = True
     risk_level = "high"  # Modifies code
 
 
-# tools/remediation/test_fix.py
-class TestFixTool(Tool):
+# tools/cve_remediation/go/cve_go_validate_fixes.py
+class CVEGoValidateFixesTool(Tool):
     """
-    Validates applied fixes by running tests and builds.
+    Validates that CVE fixes haven't broken the Go repository.
 
     Executes:
     1. go mod tidy
@@ -2330,16 +2624,19 @@ class TestFixTool(Tool):
     3. make test (extracted from Makefile via LLM)
     4. make build (only if tests pass)
     """
+    name = "cve_go_validate_fixes"
+    purpose = "cve_remediation"
+    technology = "go"
     state_inputs = ["cloned_repo_path", "go_runtime_version"]
     state_outputs = ["is_test_successful", "last_failure_step", "last_failure_logs"]
     requires_consent = True
     risk_level = "medium"
 
 
-# tools/remediation/analyse_failure.py
-class AnalyseFailureTool(Tool):
+# tools/cve_remediation/go/cve_go_diagnose_upgrade_failure.py
+class CVEGoDiagnoseUpgradeFailureTool(Tool):
     """
-    Analyzes commit diffs to identify root cause of test failures.
+    Analyzes Go dependency upgrade failures by examining git commit differences.
 
     Process:
     - Clones package repositories
@@ -2347,16 +2644,19 @@ class AnalyseFailureTool(Tool):
     - Sends commit diffs + failure logs + code context to LLM
     - LLM identifies breaking changes and suggests fixes
     """
+    name = "cve_go_diagnose_upgrade_failure"
+    purpose = "cve_remediation"
+    technology = "go"
     state_inputs = ["version_changes", "last_failure_step", "last_failure_logs", "code_chunks"]
     state_outputs = ["failure_analysis_response"]
     requires_consent = False
     risk_level = "low"
 
 
-# tools/output/generate_output.py
-class GenerateOutputTool(Tool):
+# tools/cve_remediation/go/cve_go_generate_report.py
+class CVEGoGenerateReportTool(Tool):
     """
-    Generates final markdown summary of entire workflow.
+    Generates comprehensive markdown summary of Go CVE remediation workflow.
 
     Sections:
     1. CVE Overview
@@ -2367,10 +2667,1152 @@ class GenerateOutputTool(Tool):
     6. Outcome
     7. Recommendations
     """
+    name = "cve_go_generate_report"
+    purpose = "cve_remediation"
+    technology = "go"
     state_inputs = []  # Reads entire state
     state_outputs = ["final_output", "generated_summary"]
     requires_consent = False
     risk_level = "low"
+```
+
+---
+
+#### 6.4.2 Documentation: Confluence Tools
+
+```python
+# tools/documentation/confluence/docs_confluence_read_page.py
+
+from tools.base import Tool
+from models.session import SessionState, ToolResult
+from typing import Dict, Any, List
+import httpx
+import logging
+
+logger = logging.getLogger(__name__)
+
+class DocsConfluenceReadPageTool(Tool):
+    """Fetches and reads content from Confluence wiki pages."""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self.confluence_url = config.get("confluence_url")
+        self.confluence_token = config.get("confluence_token")
+
+    @property
+    def name(self) -> str:
+        return "docs_confluence_read_page"
+
+    @property
+    def display_name(self) -> str:
+        return "Confluence Page Reader"
+
+    @property
+    def description(self) -> str:
+        return """Fetches and reads content from Confluence wiki pages. Retrieves page title,
+body content, attachments, and metadata. Supports both Cloud and Server/Data Center instances."""
+
+    @property
+    def purpose(self) -> str:
+        return "documentation"
+
+    @property
+    def technology(self) -> str:
+        return "confluence"
+
+    @property
+    def category(self) -> str:
+        return "external"
+
+    @property
+    def capabilities(self) -> List[str]:
+        return [
+            "read Confluence pages",
+            "fetch Confluence content",
+            "access wiki documentation",
+            "retrieve Confluence page metadata",
+            "download Confluence attachments"
+        ]
+
+    @property
+    def state_inputs(self) -> List[str]:
+        return ["confluence_page_url"]
+
+    @property
+    def state_outputs(self) -> List[str]:
+        return ["confluence_page_title", "confluence_page_content", "confluence_page_metadata"]
+
+    @property
+    def requires_consent(self) -> bool:
+        return False
+
+    @property
+    def risk_level(self) -> str:
+        return "low"
+
+    @property
+    def is_retriable(self) -> bool:
+        return True
+
+    @property
+    def max_retries(self) -> int:
+        return 3
+
+    async def execute(
+        self,
+        state: SessionState,
+        parameters: Dict[str, Any]
+    ) -> ToolResult:
+        """Fetch Confluence page content."""
+        start_time = datetime.utcnow()
+
+        try:
+            page_url = state.data.confluence_page_url
+
+            # Parse page ID from URL
+            page_id = self._extract_page_id(page_url)
+
+            # Fetch page via Confluence REST API
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.confluence_url}/rest/api/content/{page_id}",
+                    params={"expand": "body.storage,version,metadata"},
+                    headers={"Authorization": f"Bearer {self.confluence_token}"}
+                )
+                response.raise_for_status()
+                page_data = response.json()
+
+            # Write to state
+            state.data.confluence_page_title = page_data.get("title")
+            state.data.confluence_page_content = page_data.get("body", {}).get("storage", {}).get("value")
+            state.data.confluence_page_metadata = {
+                "version": page_data.get("version", {}).get("number"),
+                "last_modified": page_data.get("version", {}).get("when"),
+                "space": page_data.get("space", {}).get("key")
+            }
+
+            logger.info(f"Fetched Confluence page: {state.data.confluence_page_title}")
+
+            return ToolResult(
+                success=True,
+                execution_time_ms=int((datetime.utcnow() - start_time).total_seconds() * 1000),
+                output_data={"title": state.data.confluence_page_title}
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to fetch Confluence page: {e}")
+            return ToolResult(
+                success=False,
+                error=str(e),
+                execution_time_ms=int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            )
+
+    def _extract_page_id(self, url: str) -> str:
+        """Extract page ID from Confluence URL."""
+        # Parse pageId from URL (e.g., /display/SPACE/Page+Title or /pages/viewpage.action?pageId=12345)
+        # Implementation details...
+        pass
+
+
+# tools/documentation/confluence/docs_confluence_explain_content.py
+
+class DocsConfluenceExplainContentTool(Tool):
+    """Analyzes and explains technical content from Confluence pages using LLM."""
+
+    name = "docs_confluence_explain_content"
+    display_name = "Confluence Content Explainer"
+    purpose = "documentation"
+    technology = "confluence"
+    category = "internal"
+
+    description = """Analyzes and explains technical content from Confluence pages. Provides
+simplified explanations, identifies key concepts, extracts action items, and answers
+specific questions about the documentation."""
+
+    capabilities = [
+        "explain Confluence documentation",
+        "summarize technical wiki pages",
+        "extract key concepts from docs",
+        "answer questions about documentation",
+        "simplify complex technical content"
+    ]
+
+    state_inputs = ["confluence_page_content", "user_question"]
+    state_outputs = ["explanation_summary", "key_concepts", "action_items", "qa_response"]
+    requires_consent = False
+    risk_level = "low"
+```
+
+---
+
+#### 6.4.3 Project Management: Jira Tools
+
+```python
+# tools/project_management/jira/pm_jira_fetch_issue.py
+
+from tools.base import Tool
+from models.session import SessionState, ToolResult
+from typing import Dict, Any, List
+from jira import JIRA
+import logging
+
+logger = logging.getLogger(__name__)
+
+class PMJiraFetchIssueTool(Tool):
+    """Fetches detailed information about a specific Jira issue."""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self.jira_client = JIRA(
+            server=config.get("jira_url"),
+            token_auth=config.get("jira_token")
+        )
+
+    @property
+    def name(self) -> str:
+        return "pm_jira_fetch_issue"
+
+    @property
+    def display_name(self) -> str:
+        return "Jira Issue Fetcher"
+
+    @property
+    def description(self) -> str:
+        return """Fetches detailed information about a specific Jira issue including summary,
+description, status, assignee, comments, attachments, sprint, and custom fields.
+Supports both Jira Cloud and Server/Data Center."""
+
+    @property
+    def purpose(self) -> str:
+        return "project_management"
+
+    @property
+    def technology(self) -> str:
+        return "jira"
+
+    @property
+    def category(self) -> str:
+        return "external"
+
+    @property
+    def capabilities(self) -> List[str]:
+        return [
+            "fetch Jira issue details",
+            "retrieve Jira ticket information",
+            "get Jira issue status",
+            "access Jira comments",
+            "read Jira custom fields"
+        ]
+
+    @property
+    def state_inputs(self) -> List[str]:
+        return ["jira_issue_key"]
+
+    @property
+    def state_outputs(self) -> List[str]:
+        return [
+            "jira_issue_summary",
+            "jira_issue_description",
+            "jira_issue_status",
+            "jira_issue_assignee",
+            "jira_issue_comments",
+            "jira_issue_metadata"
+        ]
+
+    @property
+    def requires_consent(self) -> bool:
+        return False
+
+    @property
+    def risk_level(self) -> str:
+        return "low"
+
+    async def execute(
+        self,
+        state: SessionState,
+        parameters: Dict[str, Any]
+    ) -> ToolResult:
+        """Fetch Jira issue details."""
+        start_time = datetime.utcnow()
+
+        try:
+            issue_key = state.data.jira_issue_key
+            issue = self.jira_client.issue(issue_key, expand='changelog,renderedFields')
+
+            # Write to state
+            state.data.jira_issue_summary = issue.fields.summary
+            state.data.jira_issue_description = issue.fields.description
+            state.data.jira_issue_status = issue.fields.status.name
+            state.data.jira_issue_assignee = issue.fields.assignee.displayName if issue.fields.assignee else None
+            state.data.jira_issue_comments = [
+                {"author": c.author.displayName, "body": c.body, "created": str(c.created)}
+                for c in issue.fields.comment.comments
+            ]
+            state.data.jira_issue_metadata = {
+                "priority": issue.fields.priority.name if issue.fields.priority else None,
+                "labels": issue.fields.labels,
+                "created": str(issue.fields.created),
+                "updated": str(issue.fields.updated)
+            }
+
+            logger.info(f"Fetched Jira issue: {issue_key}")
+
+            return ToolResult(
+                success=True,
+                execution_time_ms=int((datetime.utcnow() - start_time).total_seconds() * 1000),
+                output_data={"issue_key": issue_key, "summary": state.data.jira_issue_summary}
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to fetch Jira issue: {e}")
+            return ToolResult(
+                success=False,
+                error=str(e),
+                execution_time_ms=int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            )
+
+
+# Other Jira tools (summaries)
+class PMJiraQueryIssuesTool(Tool):
+    """Executes JQL queries to find issues matching criteria."""
+    name = "pm_jira_query_issues"
+    purpose = "project_management"
+    technology = "jira"
+
+class PMJiraCreateIssueTool(Tool):
+    """Creates new Jira issues (bugs, stories, tasks, epics)."""
+    name = "pm_jira_create_issue"
+    purpose = "project_management"
+    technology = "jira"
+    requires_consent = True
+    risk_level = "medium"
+```
+
+---
+
+#### 6.4.4 Quality Engineering: QE Tools
+
+```python
+# tools/quality_engineering/project/qe_project_analyze_test_failure.py
+
+from tools.base import Tool
+from models.session import SessionState, ToolResult
+from typing import Dict, Any, List
+from llm.provider import LLMProvider
+import logging
+
+logger = logging.getLogger(__name__)
+
+class QEProjectAnalyzeTestFailureTool(Tool):
+    """Analyzes test failure logs to identify root causes."""
+
+    def __init__(self, llm_provider: LLMProvider, config: Dict[str, Any]):
+        super().__init__(config)
+        self.llm = llm_provider
+
+    @property
+    def name(self) -> str:
+        return "qe_project_analyze_test_failure"
+
+    @property
+    def display_name(self) -> str:
+        return "Test Failure Analyzer"
+
+    @property
+    def description(self) -> str:
+        return """Analyzes test failure logs, stack traces, and error messages to identify root
+causes. Searches code for relevant functions, checks recent commits, and suggests
+potential fixes based on failure patterns."""
+
+    @property
+    def purpose(self) -> str:
+        return "quality_engineering"
+
+    @property
+    def technology(self) -> str:
+        return "project_specific"
+
+    @property
+    def category(self) -> str:
+        return "internal"
+
+    @property
+    def capabilities(self) -> List[str]:
+        return [
+            "analyze test failure logs",
+            "parse stack traces",
+            "identify test failure root cause",
+            "suggest test fixes",
+            "search code for error context"
+        ]
+
+    @property
+    def state_inputs(self) -> List[str]:
+        return ["test_failure_logs", "repository_url", "repository_version"]
+
+    @property
+    def state_outputs(self) -> List[str]:
+        return ["failure_root_cause", "suggested_fixes", "related_code_snippets"]
+
+    @property
+    def requires_consent(self) -> bool:
+        return False
+
+    @property
+    def risk_level(self) -> str:
+        return "low"
+
+    async def execute(
+        self,
+        state: SessionState,
+        parameters: Dict[str, Any]
+    ) -> ToolResult:
+        """Analyze test failure."""
+        start_time = datetime.utcnow()
+
+        try:
+            failure_logs = state.data.test_failure_logs
+
+            # Use LLM to analyze failure logs
+            analysis_prompt = f"""Analyze this test failure and provide:
+1. Root cause
+2. Affected component/module
+3. Suggested fixes
+4. Code areas to investigate
+
+Test Failure Logs:
+{failure_logs}
+"""
+
+            analysis_result = await self.llm.generate_analysis(analysis_prompt)
+
+            # Write to state
+            state.data.failure_root_cause = analysis_result.get("root_cause")
+            state.data.suggested_fixes = analysis_result.get("suggested_fixes", [])
+            state.data.related_code_snippets = analysis_result.get("code_snippets", [])
+
+            logger.info(f"Test failure analysis complete")
+
+            return ToolResult(
+                success=True,
+                execution_time_ms=int((datetime.utcnow() - start_time).total_seconds() * 1000),
+                output_data={"root_cause": state.data.failure_root_cause}
+            )
+
+        except Exception as e:
+            logger.error(f"Test failure analysis failed: {e}")
+            return ToolResult(
+                success=False,
+                error=str(e),
+                execution_time_ms=int((datetime.utcnow() - start_time).total_seconds() * 1000)
+            )
+```
+
+---
+
+## 6.5 LLM Provider Abstraction
+
+### 6.5.1 Base LLM Provider Interface
+
+```python
+# llm/provider.py
+
+from abc import ABC, abstractmethod
+from typing import Dict, Any, List, Optional, AsyncIterator
+from pydantic import BaseModel
+
+class LLMProvider(ABC):
+    """Base interface for all LLM providers."""
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.model = config.get("model")
+        self.temperature = config.get("temperature", 0.3)
+        self.max_tokens = config.get("max_tokens", 4096)
+        self.timeout_seconds = config.get("timeout_seconds", 30)
+
+    @abstractmethod
+    async def generate_text(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
+    ) -> str:
+        """
+        Generate text completion.
+
+        Args:
+            system_prompt: System instructions
+            user_message: User input
+            temperature: Override default temperature
+            max_tokens: Override default max tokens
+
+        Returns:
+            Generated text
+        """
+        pass
+
+    @abstractmethod
+    async def generate_structured_output(
+        self,
+        system_prompt: str,
+        user_message: str,
+        output_schema: type[BaseModel],
+        temperature: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate structured output matching Pydantic schema.
+
+        Args:
+            system_prompt: System instructions
+            user_message: User input
+            output_schema: Pydantic model class for output structure
+            temperature: Override default temperature
+
+        Returns:
+            Dict matching the output schema
+        """
+        pass
+
+    @abstractmethod
+    async def generate_with_streaming(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: Optional[float] = None
+    ) -> AsyncIterator[str]:
+        """
+        Generate text with streaming (for thinking updates).
+
+        Args:
+            system_prompt: System instructions
+            user_message: User input
+            temperature: Override default temperature
+
+        Yields:
+            Text chunks as they're generated
+        """
+        pass
+
+    @abstractmethod
+    async def generate_plan(
+        self,
+        system_prompt: str,
+        user_message: str,
+        tools_schema: Dict[str, Any],
+        thinking_callback: Optional[callable] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate execution plan with tool selection.
+
+        Args:
+            system_prompt: Planning instructions
+            user_message: User request
+            tools_schema: Available tools schema
+            thinking_callback: Optional callback for thinking updates
+
+        Returns:
+            Plan dict with steps
+        """
+        pass
+
+    async def generate_recovery_plan(
+        self,
+        recovery_prompt: str
+    ) -> Dict[str, Any]:
+        """
+        Generate recovery plan after failure.
+
+        Args:
+            recovery_prompt: Context about failure
+
+        Returns:
+            Recovery strategy dict
+        """
+        # Default implementation using structured output
+        return await self.generate_structured_output(
+            system_prompt="You are an expert at diagnosing and recovering from failures.",
+            user_message=recovery_prompt,
+            output_schema=RecoveryPlan
+        )
+
+class RecoveryPlan(BaseModel):
+    """Recovery plan schema."""
+    strategy: str  # "retry" | "skip" | "abort" | "replan"
+    modified_parameters: Optional[Dict[str, Any]] = None
+    new_steps: Optional[List[Dict[str, Any]]] = None
+    explanation: str
+    user_notification: str
+```
+
+---
+
+### 6.5.2 Gemini Provider Implementation
+
+```python
+# llm/gemini_provider.py
+
+from llm.provider import LLMProvider
+from typing import Dict, Any, Optional, AsyncIterator
+from pydantic import BaseModel
+import google.generativeai as genai
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+class GeminiProvider(LLMProvider):
+    """Google Gemini LLM provider."""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+
+        api_key = config.get("api_key")
+        genai.configure(api_key=api_key)
+
+        self.client = genai.GenerativeModel(
+            model_name=self.model,
+            generation_config={
+                "temperature": self.temperature,
+                "max_output_tokens": self.max_tokens,
+            }
+        )
+
+    async def generate_text(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
+    ) -> str:
+        """Generate text using Gemini."""
+        try:
+            # Combine system and user prompts
+            full_prompt = f"{system_prompt}\n\n{user_message}"
+
+            response = await self.client.generate_content_async(
+                full_prompt,
+                generation_config={
+                    "temperature": temperature or self.temperature,
+                    "max_output_tokens": max_tokens or self.max_tokens
+                }
+            )
+
+            return response.text
+
+        except Exception as e:
+            logger.error(f"Gemini generation failed: {e}")
+            raise
+
+    async def generate_structured_output(
+        self,
+        system_prompt: str,
+        user_message: str,
+        output_schema: type[BaseModel],
+        temperature: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Generate structured JSON output."""
+        try:
+            # Add JSON schema to prompt
+            schema_json = output_schema.model_json_schema()
+            enhanced_prompt = f"""{system_prompt}
+
+Output must be valid JSON matching this schema:
+{json.dumps(schema_json, indent=2)}
+
+User request:
+{user_message}
+
+Respond with ONLY valid JSON, no other text."""
+
+            response_text = await self.generate_text(
+                system_prompt="",
+                user_message=enhanced_prompt,
+                temperature=temperature
+            )
+
+            # Parse JSON
+            # Handle markdown code blocks if present
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+
+            return json.loads(response_text)
+
+        except Exception as e:
+            logger.error(f"Gemini structured output failed: {e}")
+            raise
+
+    async def generate_with_streaming(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: Optional[float] = None
+    ) -> AsyncIterator[str]:
+        """Stream text generation."""
+        try:
+            full_prompt = f"{system_prompt}\n\n{user_message}"
+
+            response = await self.client.generate_content_async(
+                full_prompt,
+                generation_config={
+                    "temperature": temperature or self.temperature,
+                },
+                stream=True
+            )
+
+            async for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+
+        except Exception as e:
+            logger.error(f"Gemini streaming failed: {e}")
+            raise
+
+    async def generate_plan(
+        self,
+        system_prompt: str,
+        user_message: str,
+        tools_schema: Dict[str, Any],
+        thinking_callback: Optional[callable] = None
+    ) -> Dict[str, Any]:
+        """Generate execution plan."""
+        # For Gemini, we'll use structured output with planning schema
+        plan_schema = {
+            "steps": [{
+                "tool_name": "string",
+                "description": "string",
+                "parameters": "object",
+                "expected_output": "string",
+                "risk_level": "string",
+                "requires_consent": "boolean",
+                "dependencies": ["string"]
+            }],
+            "estimated_duration": "string"
+        }
+
+        enhanced_prompt = f"""{system_prompt}
+
+Available Tools:
+{json.dumps(tools_schema, indent=2)}
+
+User Request:
+{user_message}
+
+Create a step-by-step execution plan."""
+
+        # Stream thinking process if callback provided
+        if thinking_callback:
+            await thinking_callback("Analyzing user request...")
+            await thinking_callback("Selecting relevant tools...")
+            await thinking_callback("Creating execution plan...")
+
+        return await self.generate_structured_output(
+            system_prompt="",
+            user_message=enhanced_prompt,
+            output_schema=type("PlanSchema", (BaseModel,), {
+                "__annotations__": plan_schema
+            })
+        )
+```
+
+---
+
+### 6.5.3 OpenAI Provider Implementation
+
+```python
+# llm/openai_provider.py
+
+from llm.provider import LLMProvider
+from typing import Dict, Any, Optional, AsyncIterator
+from pydantic import BaseModel
+from openai import AsyncOpenAI
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+class OpenAIProvider(LLMProvider):
+    """OpenAI GPT LLM provider."""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+
+        self.client = AsyncOpenAI(
+            api_key=config.get("api_key"),
+            base_url=config.get("base_url"),
+            timeout=self.timeout_seconds
+        )
+
+    async def generate_text(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
+    ) -> str:
+        """Generate text using OpenAI."""
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=temperature or self.temperature,
+                max_tokens=max_tokens or self.max_tokens
+            )
+
+            return response.choices[0].message.content
+
+        except Exception as e:
+            logger.error(f"OpenAI generation failed: {e}")
+            raise
+
+    async def generate_structured_output(
+        self,
+        system_prompt: str,
+        user_message: str,
+        output_schema: type[BaseModel],
+        temperature: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Generate structured JSON output using OpenAI's response_format."""
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=temperature or self.temperature,
+                response_format={"type": "json_object"},
+                max_tokens=self.max_tokens
+            )
+
+            return json.loads(response.choices[0].message.content)
+
+        except Exception as e:
+            logger.error(f"OpenAI structured output failed: {e}")
+            raise
+
+    async def generate_with_streaming(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: Optional[float] = None
+    ) -> AsyncIterator[str]:
+        """Stream text generation."""
+        try:
+            stream = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=temperature or self.temperature,
+                stream=True
+            )
+
+            async for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+
+        except Exception as e:
+            logger.error(f"OpenAI streaming failed: {e}")
+            raise
+
+    async def generate_plan(
+        self,
+        system_prompt: str,
+        user_message: str,
+        tools_schema: Dict[str, Any],
+        thinking_callback: Optional[callable] = None
+    ) -> Dict[str, Any]:
+        """Generate plan using OpenAI function calling."""
+        # OpenAI has native function calling support
+        # Implementation would use tools parameter
+        pass
+```
+
+---
+
+### 6.5.4 Ollama Provider Implementation
+
+```python
+# llm/ollama_provider.py
+
+from llm.provider import LLMProvider
+from typing import Dict, Any, Optional, AsyncIterator
+from pydantic import BaseModel
+import httpx
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+class OllamaProvider(LLMProvider):
+    """Ollama local LLM provider."""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+
+        self.base_url = config.get("base_url", "http://localhost:11434")
+        self.client = httpx.AsyncClient(timeout=self.timeout_seconds)
+
+    async def generate_text(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
+    ) -> str:
+        """Generate text using Ollama."""
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": f"{system_prompt}\n\n{user_message}",
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature or self.temperature,
+                        "num_predict": max_tokens or self.max_tokens
+                    }
+                }
+            )
+            response.raise_for_status()
+
+            return response.json()["response"]
+
+        except Exception as e:
+            logger.error(f"Ollama generation failed: {e}")
+            raise
+
+    async def generate_structured_output(
+        self,
+        system_prompt: str,
+        user_message: str,
+        output_schema: type[BaseModel],
+        temperature: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Generate structured JSON output."""
+        try:
+            schema_json = output_schema.model_json_schema()
+            enhanced_prompt = f"""{system_prompt}
+
+Output must be valid JSON matching this schema:
+{json.dumps(schema_json, indent=2)}
+
+User request:
+{user_message}
+
+Respond with ONLY valid JSON, no other text."""
+
+            response_text = await self.generate_text(
+                system_prompt="",
+                user_message=enhanced_prompt,
+                temperature=temperature
+            )
+
+            # Parse JSON (handle markdown if present)
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+
+            return json.loads(response_text)
+
+        except Exception as e:
+            logger.error(f"Ollama structured output failed: {e}")
+            raise
+
+    async def generate_with_streaming(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: Optional[float] = None
+    ) -> AsyncIterator[str]:
+        """Stream text generation."""
+        try:
+            async with self.client.stream(
+                "POST",
+                f"{self.base_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": f"{system_prompt}\n\n{user_message}",
+                    "stream": True,
+                    "options": {
+                        "temperature": temperature or self.temperature
+                    }
+                }
+            ) as response:
+                async for line in response.aiter_lines():
+                    if line:
+                        chunk = json.loads(line)
+                        if "response" in chunk:
+                            yield chunk["response"]
+
+        except Exception as e:
+            logger.error(f"Ollama streaming failed: {e}")
+            raise
+
+    async def generate_plan(
+        self,
+        system_prompt: str,
+        user_message: str,
+        tools_schema: Dict[str, Any],
+        thinking_callback: Optional[callable] = None
+    ) -> Dict[str, Any]:
+        """Generate execution plan."""
+        # Similar to Gemini implementation
+        pass
+```
+
+---
+
+### 6.5.5 LLM Provider Manager
+
+```python
+# llm/manager.py
+
+from llm.provider import LLMProvider
+from llm.gemini_provider import GeminiProvider
+from llm.openai_provider import OpenAIProvider
+from llm.ollama_provider import OllamaProvider
+from typing import Dict, Any, Optional
+import yaml
+import logging
+
+logger = logging.getLogger(__name__)
+
+class LLMProviderManager:
+    """
+    Manages multiple LLM providers and selects appropriate one per request.
+
+    Handles:
+    - Loading provider configurations
+    - Instantiating providers
+    - Selecting provider based on tool preferences
+    - Fallback on errors
+    """
+
+    def __init__(self, config_path: str = "config/llm_config.yaml"):
+        self.config = self._load_config(config_path)
+        self.providers: Dict[str, LLMProvider] = {}
+        self._initialize_providers()
+
+    def _load_config(self, config_path: str) -> Dict[str, Any]:
+        """Load LLM configuration."""
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f).get("llm_config", {})
+
+    def _initialize_providers(self):
+        """Initialize all configured LLM providers."""
+        provider_configs = self.config.get("providers", {})
+
+        for provider_name, provider_config in provider_configs.items():
+            try:
+                provider_type = provider_config.get("provider")
+
+                if provider_type == "gemini":
+                    self.providers[provider_name] = GeminiProvider(provider_config)
+                elif provider_type == "openai":
+                    self.providers[provider_name] = OpenAIProvider(provider_config)
+                elif provider_type == "ollama":
+                    self.providers[provider_name] = OllamaProvider(provider_config)
+                elif provider_type == "anthropic":
+                    # Add Anthropic provider implementation
+                    pass
+                else:
+                    logger.warning(f"Unknown provider type: {provider_type}")
+
+                logger.info(f"Initialized LLM provider: {provider_name} ({provider_type}/{provider_config.get('model')})")
+
+            except Exception as e:
+                logger.error(f"Failed to initialize provider {provider_name}: {e}")
+
+    def get_provider(
+        self,
+        provider_name: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        use_case: str = "tool_default"
+    ) -> LLMProvider:
+        """
+        Get LLM provider based on preferences.
+
+        Priority:
+        1. Explicit provider_name parameter
+        2. Tool-specific override from config
+        3. Use case default (planner, tool_default, recovery_planner)
+        4. First available provider
+
+        Args:
+            provider_name: Explicit provider name
+            tool_name: Tool requesting LLM (for overrides)
+            use_case: Use case type (planner, tool_default, recovery_planner)
+
+        Returns:
+            LLMProvider instance
+        """
+        selected_provider_name = None
+
+        # Priority 1: Explicit provider
+        if provider_name:
+            selected_provider_name = provider_name
+
+        # Priority 2: Tool-specific override
+        elif tool_name:
+            tool_overrides = self.config.get("tool_overrides", {})
+            if tool_name in tool_overrides:
+                selected_provider_name = tool_overrides[tool_name]
+                logger.debug(f"Using tool override for {tool_name}: {selected_provider_name}")
+
+        # Priority 3: Use case default
+        if not selected_provider_name:
+            defaults = self.config.get("defaults", {})
+            selected_provider_name = defaults.get(use_case, defaults.get("tool_default"))
+
+        # Priority 4: First available
+        if not selected_provider_name or selected_provider_name not in self.providers:
+            selected_provider_name = list(self.providers.keys())[0] if self.providers else None
+
+        if not selected_provider_name:
+            raise ValueError("No LLM providers available")
+
+        logger.debug(f"Selected LLM provider: {selected_provider_name} (use_case={use_case}, tool={tool_name})")
+        return self.providers[selected_provider_name]
+
+    def get_provider_with_fallback(
+        self,
+        provider_name: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        use_case: str = "tool_default"
+    ) -> tuple[LLMProvider, Optional[LLMProvider]]:
+        """
+        Get primary provider and fallback provider.
+
+        Returns:
+            Tuple of (primary_provider, fallback_provider or None)
+        """
+        primary = self.get_provider(provider_name, tool_name, use_case)
+
+        fallback_config = self.config.get("fallback", {})
+        if fallback_config.get("enabled"):
+            fallback_name = fallback_config.get("provider")
+            fallback = self.providers.get(fallback_name)
+            return (primary, fallback)
+
+        return (primary, None)
+
+    def get_planner_provider(self) -> LLMProvider:
+        """Get LLM provider for planning."""
+        return self.get_provider(use_case="planner")
+
+    def get_recovery_provider(self) -> LLMProvider:
+        """Get LLM provider for recovery planning."""
+        return self.get_provider(use_case="recovery_planner")
 ```
 
 ---
@@ -2559,16 +4001,31 @@ export const useWebSocket = (
 ```yaml
 # config/tool_registry.yaml
 
+# ==============================================================================
+# Tool Registry - Purpose-Based Organization
+# Naming Pattern: {purpose}_{technology}_{action}_{target}
+# ==============================================================================
+
 tools:
-  - name: fetch_inputs
-    display_name: Input Extractor
-    description: Extracts CVE ID, repository URL, and version from user's natural language prompt
+  # ============================================================================
+  # Purpose: CVE Remediation - Go Language
+  # ============================================================================
+
+  - name: cve_go_extract_request_details
+    display_name: Go CVE Request Parser
+    purpose: cve_remediation
+    technology: go
+    description: >
+      Extracts CVE identifier, Go repository URL, and version/branch from user's
+      natural language request about Go vulnerability analysis. Validates that the
+      request is about analyzing a CVE for a Go repository.
     category: internal
     capabilities:
-      - extract CVE
-      - parse repository
-      - understand user intent
-      - validate inputs
+      - parse Go CVE analysis request
+      - extract CVE identifier
+      - extract Go repository information
+      - validate Go vulnerability request
+      - understand CVE remediation intent
 
     state_inputs: []
     state_outputs:
@@ -2594,16 +4051,23 @@ tools:
         parameters:
           output_schema: CVEInput
 
-  - name: assess_cve
-    display_name: CVE Assessor
-    description: Fetches CVE data from multiple APIs and identifies affected Go packages
+  - name: cve_go_fetch_vulnerability_data
+    display_name: Go CVE Data Fetcher
+    purpose: cve_remediation
+    technology: go
+    description: >
+      Fetches comprehensive CVE vulnerability data from multiple security databases
+      (OSV, NVD, CVEORG, Bugzilla) specifically for Go language vulnerabilities.
+      Identifies affected Go packages, fix versions, CVSS scores, and vulnerable symbols.
     category: external
     capabilities:
-      - fetch CVE data
-      - validate Go vulnerability
-      - find affected packages
-      - identify fix versions
-      - CVSS scoring
+      - fetch Go CVE data from OSV
+      - fetch Go CVE data from NVD
+      - query Go vulnerability database
+      - identify affected Go packages
+      - find Go package fix versions
+      - extract CVSS scores for Go CVEs
+      - map vulnerable Go symbols
 
     state_inputs:
       - cve_id
@@ -2644,11 +4108,284 @@ tools:
 
       - task_id: analyze_llm
         type: llm_call
-        description: Analyze combined data
+        description: Analyze combined CVE data
         target: llm
         dependencies: [fetch_osv, fetch_nvd, fetch_cveorg]
 
-  # Additional tools...
+  - name: cve_go_analyze_repository_impact
+    display_name: Go Repository CVE Impact Analyzer
+    purpose: cve_remediation
+    technology: go
+    description: >
+      Analyzes a Go repository to determine if a CVE actually affects it by examining
+      go.mod dependencies and searching source code for usage of vulnerable package
+      symbols. Performs deep static analysis to detect false alarms.
+    category: external
+    capabilities:
+      - analyze Go repository go.mod file
+      - check Go package versions
+      - search Go code for vulnerable symbols
+      - detect CVE false alarms in Go projects
+      - perform Go static code analysis
+      - determine real Go CVE impact
+
+    state_inputs:
+      - repo_url
+      - repo_version
+      - affected_packages
+      - cve_id
+    state_outputs:
+      - is_false_alarm
+      - analysis_incomplete
+      - cloned_repo_path
+      - gomod_analysis
+      - code_chunks
+
+    requires_consent: true
+    risk_level: medium
+    estimated_duration: "60 seconds"
+
+    is_retriable: true
+    max_retries: 2
+    retry_delay_ms: 3000
+
+  - name: cve_go_update_dependencies
+    display_name: Go Dependency Version Updater
+    purpose: cve_remediation
+    technology: go
+    description: >
+      Automatically updates go.mod file to fix CVE vulnerabilities by upgrading
+      affected Go packages to safe versions. Handles replace blocks and version
+      selection. Requires manual intervention for hard replace blocks.
+    category: external
+    capabilities:
+      - update go.mod dependencies
+      - upgrade Go packages to safe versions
+      - fix Go CVE vulnerabilities
+      - handle Go replace blocks
+      - manage Go indirect dependencies
+
+    state_inputs:
+      - cloned_repo_path
+      - affected_packages
+    state_outputs:
+      - go_mod_updated
+      - version_changes
+      - go_runtime_version
+
+    requires_consent: true
+    risk_level: high
+    estimated_duration: "10 seconds"
+
+    is_retriable: false
+    max_retries: 0
+
+  # ============================================================================
+  # Purpose: Documentation - Confluence
+  # ============================================================================
+
+  - name: docs_confluence_read_page
+    display_name: Confluence Page Reader
+    purpose: documentation
+    technology: confluence
+    description: >
+      Fetches and reads content from Confluence wiki pages. Retrieves page title,
+      body content, attachments, and metadata. Supports both Cloud and Server/Data
+      Center instances.
+    category: external
+    capabilities:
+      - read Confluence pages
+      - fetch Confluence content
+      - access wiki documentation
+      - retrieve Confluence page metadata
+      - download Confluence attachments
+
+    state_inputs:
+      - confluence_page_url
+    state_outputs:
+      - confluence_page_title
+      - confluence_page_content
+      - confluence_page_metadata
+
+    requires_consent: false
+    risk_level: low
+    estimated_duration: "5 seconds"
+
+    is_retriable: true
+    max_retries: 3
+    retry_delay_ms: 2000
+
+  - name: docs_confluence_explain_content
+    display_name: Confluence Content Explainer
+    purpose: documentation
+    technology: confluence
+    description: >
+      Analyzes and explains technical content from Confluence pages. Provides
+      simplified explanations, identifies key concepts, extracts action items,
+      and answers specific questions about the documentation.
+    category: internal
+    capabilities:
+      - explain Confluence documentation
+      - summarize technical wiki pages
+      - extract key concepts from docs
+      - answer questions about documentation
+      - simplify complex technical content
+
+    state_inputs:
+      - confluence_page_content
+      - user_question
+    state_outputs:
+      - explanation_summary
+      - key_concepts
+      - action_items
+      - qa_response
+
+    requires_consent: false
+    risk_level: low
+    estimated_duration: "10 seconds"
+
+    is_retriable: true
+    max_retries: 2
+    retry_delay_ms: 1000
+
+  # ============================================================================
+  # Purpose: Project Management - Jira
+  # ============================================================================
+
+  - name: pm_jira_fetch_issue
+    display_name: Jira Issue Fetcher
+    purpose: project_management
+    technology: jira
+    description: >
+      Fetches detailed information about a specific Jira issue including summary,
+      description, status, assignee, comments, attachments, and custom fields.
+      Supports both Jira Cloud and Server/Data Center.
+    category: external
+    capabilities:
+      - fetch Jira issue details
+      - retrieve Jira ticket information
+      - get Jira issue status
+      - access Jira comments
+      - read Jira custom fields
+
+    state_inputs:
+      - jira_issue_key
+    state_outputs:
+      - jira_issue_summary
+      - jira_issue_description
+      - jira_issue_status
+      - jira_issue_assignee
+      - jira_issue_comments
+      - jira_issue_metadata
+
+    requires_consent: false
+    risk_level: low
+    estimated_duration: "5 seconds"
+
+    is_retriable: true
+    max_retries: 3
+    retry_delay_ms: 2000
+
+  - name: pm_jira_query_issues
+    display_name: Jira JQL Query Tool
+    purpose: project_management
+    technology: jira
+    description: >
+      Executes JQL (Jira Query Language) queries to find issues matching specific
+      criteria. Useful for finding all issues in a sprint, filtering by assignee,
+      status, labels, or custom queries.
+    category: external
+    capabilities:
+      - query Jira issues with JQL
+      - search Jira tickets
+      - filter issues by criteria
+      - find sprint issues
+      - get issues by status
+
+    state_inputs:
+      - jql_query
+    state_outputs:
+      - jira_query_results
+      - matching_issue_keys
+      - issue_count
+
+    requires_consent: false
+    risk_level: low
+    estimated_duration: "5 seconds"
+
+    is_retriable: true
+    max_retries: 3
+    retry_delay_ms: 2000
+
+  # ============================================================================
+  # Purpose: Quality Engineering - Testing
+  # ============================================================================
+
+  - name: qe_project_analyze_test_failure
+    display_name: Test Failure Analyzer
+    purpose: quality_engineering
+    technology: project_specific
+    description: >
+      Analyzes test failure logs, stack traces, and error messages to identify
+      root causes. Searches code for relevant functions, checks recent commits,
+      and suggests potential fixes based on failure patterns.
+    category: internal
+    capabilities:
+      - analyze test failure logs
+      - parse stack traces
+      - identify test failure root cause
+      - suggest test fixes
+      - search code for error context
+
+    state_inputs:
+      - test_failure_logs
+      - repository_url
+      - repository_version
+    state_outputs:
+      - failure_root_cause
+      - suggested_fixes
+      - related_code_snippets
+
+    requires_consent: false
+    risk_level: low
+    estimated_duration: "15 seconds"
+
+    is_retriable: true
+    max_retries: 2
+    retry_delay_ms: 1000
+
+  - name: qe_github_search_similar_issues
+    display_name: GitHub Similar Issue Finder
+    purpose: quality_engineering
+    technology: github
+    description: >
+      Searches GitHub issues and pull requests for similar problems based on error
+      messages, stack traces, or symptom descriptions. Helps identify if issue is
+      already known, fixed, or has workarounds.
+    category: external
+    capabilities:
+      - search GitHub issues
+      - find similar problems
+      - query GitHub PRs
+      - identify known issues
+      - discover workarounds
+
+    state_inputs:
+      - repository_url
+      - error_message
+      - search_query
+    state_outputs:
+      - similar_issues
+      - related_prs
+      - known_workarounds
+
+    requires_consent: false
+    risk_level: low
+    estimated_duration: "10 seconds"
+
+    is_retriable: true
+    max_retries: 3
+    retry_delay_ms: 2000
 ```
 
 ### 8.2 LLM Configuration
@@ -2657,30 +4394,146 @@ tools:
 # config/llm_config.yaml
 
 llm_config:
-  provider: gemini  # openai | gemini | anthropic | ollama
-  model: gemini-2.0-flash-exp
-  api_key: ${LLM_API_KEY}
-  base_url: null  # For custom endpoints
+  # ============================================================================
+  # LLM Provider Definitions
+  # Multiple providers can be configured and selected per-tool
+  # ============================================================================
 
-  planner:
-    temperature: 0.1
-    max_tokens: 4096
-    timeout_seconds: 30
-    system_prompt_template: prompts/planner_system.txt
+  providers:
+    # Gemini (Google)
+    gemini_flash:
+      provider: gemini
+      model: gemini-2.0-flash-exp
+      api_key: ${GEMINI_API_KEY}
+      base_url: null
+      temperature: 0.3
+      max_tokens: 4096
+      timeout_seconds: 30
 
-  tool_llm_calls:
-    temperature: 0.3
-    max_tokens: 2048
-    timeout_seconds: 20
+    gemini_pro:
+      provider: gemini
+      model: gemini-2.0-pro-exp
+      api_key: ${GEMINI_API_KEY}
+      base_url: null
+      temperature: 0.2
+      max_tokens: 8192
+      timeout_seconds: 60
+
+    # OpenAI
+    openai_gpt4o:
+      provider: openai
+      model: gpt-4o
+      api_key: ${OPENAI_API_KEY}
+      base_url: https://api.openai.com/v1
+      temperature: 0.3
+      max_tokens: 4096
+      timeout_seconds: 30
+
+    openai_gpt4o_mini:
+      provider: openai
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+      base_url: https://api.openai.com/v1
+      temperature: 0.3
+      max_tokens: 4096
+      timeout_seconds: 20
+
+    # Anthropic Claude
+    claude_sonnet:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      api_key: ${ANTHROPIC_API_KEY}
+      base_url: https://api.anthropic.com
+      temperature: 0.3
+      max_tokens: 4096
+      timeout_seconds: 30
+
+    # Ollama (Local)
+    ollama_llama3:
+      provider: ollama
+      model: llama3:latest
+      api_key: null  # Not required for Ollama
+      base_url: http://localhost:11434
+      temperature: 0.3
+      max_tokens: 4096
+      timeout_seconds: 60
+
+    ollama_codellama:
+      provider: ollama
+      model: codellama:latest
+      api_key: null
+      base_url: http://localhost:11434
+      temperature: 0.2
+      max_tokens: 4096
+      timeout_seconds: 60
+
+    ollama_mistral:
+      provider: ollama
+      model: mistral:latest
+      api_key: null
+      base_url: http://localhost:11434
+      temperature: 0.3
+      max_tokens: 4096
+      timeout_seconds: 60
+
+  # ============================================================================
+  # Default LLM Selection by Component
+  # ============================================================================
+
+  defaults:
+    # Planner LLM (for plan generation)
+    planner: gemini_pro
+    planner_config:
+      temperature: 0.1  # Override temperature for planning
+      max_tokens: 4096
+      system_prompt_template: prompts/planner_system.txt
+
+    # Tool LLM calls (default for tools that use LLM)
+    tool_default: gemini_flash
+
+    # Recovery planning (when step fails)
+    recovery_planner: openai_gpt4o_mini
+
+  # ============================================================================
+  # Per-Tool LLM Override
+  # Tools can specify preferred LLM in their configuration
+  # ============================================================================
+
+  tool_overrides:
+    # CVE analysis tools - use powerful models for accuracy
+    cve_go_fetch_vulnerability_data: gemini_pro
+    cve_go_diagnose_upgrade_failure: openai_gpt4o
+
+    # Simple extraction - use fast/cheap models
+    cve_go_extract_request_details: gemini_flash
+
+    # Documentation tools - local models for privacy
+    docs_confluence_explain_content: ollama_llama3
+
+    # Code analysis - use code-optimized models
+    qe_project_analyze_test_failure: ollama_codellama
+
+  # ============================================================================
+  # Fallback Configuration
+  # ============================================================================
 
   fallback:
     enabled: true
-    provider: openai
-    model: gpt-4o-mini
+    provider: openai_gpt4o_mini  # Fallback to this provider
     trigger_on:
       - timeout
       - rate_limit
       - model_unavailable
+      - api_error
+
+  # ============================================================================
+  # Cost Optimization
+  # ============================================================================
+
+  cost_optimization:
+    enabled: true
+    prefer_local_for_simple_tasks: true  # Use Ollama for low-complexity tasks
+    complexity_threshold: 5  # 1-10 scale, tasks below this use local models
 ```
 
 ### 8.3 System Configuration
@@ -2870,5 +4723,159 @@ async def test_full_cve_remediation_workflow():
 
 ---
 
-*Document Version: 1.0*
+## 12. Tool Naming Convention & Organization Guide
+
+### 12.1 Purpose-Based Naming Pattern
+
+**Pattern:** `{purpose}_{technology}_{action}_{target}`
+
+**Components:**
+1. **Purpose**: Primary use case category (e.g., `cve`, `docs`, `pm`, `qe`)
+2. **Technology**: Platform/language being worked with (e.g., `go`, `python`, `confluence`, `jira`)
+3. **Action**: What the tool does (e.g., `fetch`, `analyze`, `update`, `create`)
+4. **Target**: What it acts upon (e.g., `vulnerability_data`, `page`, `issue`)
+
+### 12.2 Purpose Categories
+
+| Purpose | Full Name | Description | Example Technologies |
+|---------|-----------|-------------|---------------------|
+| `cve` | CVE Remediation | Security vulnerability analysis and fixes | go, python, rust, javascript |
+| `docs` | Documentation | Read, explain, search documentation | confluence, sharepoint, notion |
+| `pm` | Project Management | Issue tracking, sprint management | jira, github, gitlab |
+| `qe` | Quality Engineering | Testing, debugging, failure analysis | project_specific, jenkins, github |
+| `deploy` | Deployment | CI/CD, infrastructure, releases | kubernetes, docker, terraform |
+| `monitor` | Monitoring | Metrics, alerts, observability | prometheus, grafana, splunk |
+
+### 12.3 Benefits
+
+#### 1. **Clear Intent for LLM**
+LLM can instantly understand:
+- **What**: Purpose indicates the domain
+- **Where**: Technology specifies the platform
+- **How**: Action describes the operation
+
+**Example:**
+```
+User: "Analyze CVE-2024-1234 for my Python app"
+
+LLM sees tools:
+- cve_go_fetch_vulnerability_data     ❌ (wrong technology)
+- cve_python_fetch_vulnerability_data ✅ (correct match)
+- docs_confluence_read_page           ❌ (wrong purpose)
+```
+
+#### 2. **Easy Tool Discovery**
+```python
+# Find all Go CVE tools
+registry.search_tools(purpose="cve_remediation", technology="go")
+
+# Find all documentation tools
+registry.get_by_purpose("documentation")
+
+# Find all Confluence-related tools
+registry.get_by_technology("confluence")
+```
+
+#### 3. **Scalable for Future**
+Adding new capabilities is straightforward:
+
+```yaml
+# Adding Python CVE support
+- name: cve_python_fetch_vulnerability_data
+- name: cve_python_update_requirements_txt
+- name: cve_python_validate_fixes
+
+# Adding Slack integration
+- name: pm_slack_send_notification
+- name: pm_slack_create_channel
+
+# Adding Kubernetes deployment
+- name: deploy_kubernetes_apply_manifest
+- name: deploy_kubernetes_scale_deployment
+```
+
+#### 4. **Avoid Conflicts**
+Different purposes can have similar actions:
+
+```yaml
+- cve_go_analyze_repository_impact      # Scans for vulnerabilities
+- qe_project_analyze_test_failure       # Scans for test issues
+- docs_confluence_analyze_page_structure # Analyzes documentation
+```
+
+All have "analyze" but are clearly different contexts.
+
+### 12.4 Capability Keywords Best Practices
+
+**Include:**
+1. **Purpose keyword** - e.g., "Go CVE", "Confluence documentation", "Jira issue"
+2. **Action verbs** - e.g., "fetch", "analyze", "update", "create", "search"
+3. **Target nouns** - e.g., "vulnerability data", "wiki page", "test failure"
+4. **Platform specifics** - e.g., "go.mod", "JQL query", "stack trace"
+
+**Example:**
+```yaml
+capabilities:
+  - fetch Go CVE data from OSV          # Purpose + Action + Platform
+  - identify affected Go packages       # Action + Domain + Technology
+  - extract CVSS scores for Go CVEs     # Action + Target + Purpose
+  - map vulnerable Go symbols           # Action + Target + Technology
+```
+
+### 12.5 Tool Organization Structure
+
+```
+tools/
+├── base.py                                    # Base Tool class
+│
+├── cve_remediation/                           # Purpose
+│   ├── go/                                    # Technology
+│   │   ├── cve_go_extract_request_details.py
+│   │   ├── cve_go_fetch_vulnerability_data.py
+│   │   └── ...
+│   ├── python/
+│   │   └── cve_python_*.py
+│   └── rust/
+│       └── cve_rust_*.py
+│
+├── documentation/
+│   ├── confluence/
+│   │   └── docs_confluence_*.py
+│   ├── sharepoint/
+│   │   └── docs_sharepoint_*.py
+│   └── notion/
+│       └── docs_notion_*.py
+│
+├── project_management/
+│   ├── jira/
+│   │   └── pm_jira_*.py
+│   └── github/
+│       └── pm_github_*.py
+│
+└── quality_engineering/
+    ├── project_specific/
+    │   └── qe_project_*.py
+    └── github/
+        └── qe_github_*.py
+```
+
+### 12.6 Adding New Tools - Checklist
+
+When adding a new tool:
+
+1. ✅ **Determine purpose** - Which category does it belong to?
+2. ✅ **Identify technology** - What platform/language does it work with?
+3. ✅ **Name appropriately** - Follow `{purpose}_{technology}_{action}_{target}` pattern
+4. ✅ **Write clear description** - Explain what it does in 2-3 sentences
+5. ✅ **List capabilities** - Include purpose, technology, action keywords
+6. ✅ **Define state I/O** - What fields does it read/write?
+7. ✅ **Set risk level** - Based on what it modifies (read-only = low, modify code = high)
+8. ✅ **Configure retry** - Is it safe to retry? How many times?
+9. ✅ **Register in YAML** - Add to `tool_registry.yaml`
+10. ✅ **Update SessionData** - Add required state fields if new
+
+---
+
+*Document Version: 2.0*
 *Last Updated: February 2026*
+
