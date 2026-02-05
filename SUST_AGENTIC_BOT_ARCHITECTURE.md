@@ -5,7 +5,7 @@
 
 ## 1. Executive Summary
 
-The **OCP Sustaining Agentic Bot** is an extensible, AI-powered assistant designed for team internal repeatable tasks and informational workflows. Built with a modular architecture, it enables easy onboarding of new tools/capabilities while providing a transparent, consent-driven user experience. Task execution can be accessed via both UI and API.
+The **OCP Sustaining Agentic Bot** is an extensible, AI-powered assistant designed for team internal repeatable tasks and informational workflows. Built with a modular architecture using ephemeral containers (1:1 session-to-container mapping), it enables easy onboarding of new tools/capabilities while providing a transparent, consent-driven user experience. Task execution can be accessed via both UI (single React app with chat and dashboard) and programmatic API.
 
 ### Key Differentiators
 - **Transparent AI Reasoning**: Collapsible thinking/planning panel (similar to Cursor, Claude)
@@ -19,7 +19,13 @@ The **OCP Sustaining Agentic Bot** is an extensible, AI-powered assistant design
 
 ![OCP Sustaining Bot - Architecture](./architecture-new.png?v=2)
 
-*High-level architecture showing separate Frontend applications (Chat App, Dashboard App), Programmatic API Access (ARC, Scripts, CI/CD, External Systems), shared Backend (Orchestrator, State, Tools), External Services, and Central Database*
+*High-level architecture showing Single React App (with Chat and Dashboard), Programmatic API Access (ARC, Scripts, CI/CD, External Systems), ephemeral Backend containers (1:1 per session), External Services, and Central PostgreSQL Database*
+
+**Architecture Model:**
+- **1:1 Container-Per-Session:** Each session (UI or API) gets a dedicated ephemeral backend container
+- **Single React App:** Unified UI with Chat and Dashboard routes, both connecting to the same backend container
+- **Unified Backend:** Single FastAPI application serving WebSocket (chat) + REST API (dashboard, programmatic access)
+- **Container Orchestration:** Platform-agnostic design; supports Kubernetes, Serverless, or other orchestrators (see Section 8.4)
 
 ---
 
@@ -91,16 +97,20 @@ PlanStep {
 
 **Execution Loop**:
 ```
+# Execute steps respecting dependencies (can run parallel steps if no dependencies)
 for each step in plan:
     1. GET tool config from Tool Registry (including retry policy)
-    2. CHECK state.data for required inputs → skip if missing
-    3. REQUEST consent if tool.requires_consent == true
-    4. EXECUTE tool → tool writes results to state.data
-    5. EXECUTOR writes step_status, retry_count to state.data
-    6. ON FAILURE:
-       ├── IF tool.is_retriable AND state.retry_count < tool.max_retries
-       │   └── Wait tool.retry_delay_ms, increment retry_count, GOTO step 4
-       ├── ELSE ask Planner for alternative or abort
+    2. CHECK step dependencies are satisfied
+    3. CHECK state.data for required inputs → skip if missing
+    4. REQUEST consent if tool.requires_consent == true
+       ├── IF consent timeout → STOP execution, notify user "Consent timeout"
+    5. EXECUTE tool → tool writes results to state.data
+    6. EXECUTOR writes step_status to state.data
+    7. ON FAILURE:
+       ├── IF tool.is_retriable AND step_retry_count < tool.max_retries
+       │   └── Wait tool.retry_delay_ms, increment step_retry_count, GOTO step 5
+       ├── ELSE ask Planner for recovery plan (automatic LLM-driven recovery)
+    8. Send step_progress updates to frontend after each step
 ```
 
 #### 3.1.3 Consent Manager
@@ -127,7 +137,7 @@ ConsentRequest {
     parameters_summary: string          // Human-readable parameter description
     risk_level: "low" | "medium" | "high"
     reversible: boolean
-    timeout_seconds: number             // Auto-reject if no response
+    timeout_seconds: number             // Default: 300 (5 mins); if exceeded, execution STOPS
     bulk_options: {
         approve_all_risks: boolean      // Allow user to approve all remaining steps
         approve_low_risks: boolean      // Allow user to auto-approve low risk steps
@@ -138,10 +148,15 @@ ConsentRequest {
 ConsentResponse {
     request_id: string
     decision: "approved" | "rejected" | "modified" | "bulk_approve_all" | "bulk_approve_low" | "bulk_approve_low_medium"
-    modified_parameters: dict | null    // If user wants to modify params
+    modified_parameters: dict | null    // If user wants to modify params (validated against tool schema)
     user_feedback: string | null        // Optional feedback for improvement
 }
 ```
+
+**Consent Timeout Behavior:**
+- If user doesn't respond within `timeout_seconds`, execution stops
+- User receives notification: "Consent request timed out. Execution stopped."
+- Session remains active; user can start a new request
 
 ---
 
@@ -180,9 +195,12 @@ Tool {
 }
 
 Task {
+    task_id: string                     // Unique identifier within tool
     type: "api_call" | "mcp_call" | "llm_call" | "evaluate" | "store"
     description: string
     target: string                      // API endpoint, MCP server, LLM model, etc.
+    dependencies: string[]              // task_ids this task depends on (empty = can run immediately)
+    parameters: dict                    // Task-specific parameters
 }
 
 ToolResult {
@@ -191,6 +209,12 @@ ToolResult {
     execution_time_ms: number
     tasks_completed: string[]           // Which tasks ran successfully
 }
+
+**Task Execution Logic:**
+- Tasks with no dependencies run immediately (can be parallelized)
+- Tasks with dependencies wait for those tasks to complete
+- State is used to pass data between tasks
+- If any task fails, tool execution stops unless task is marked as optional
 ```
 
 **Example Tool Definition:**
@@ -198,21 +222,24 @@ ToolResult {
 Tool: assess_cve
   category: external
   capabilities: ["analyze CVE", "check vulnerability", "assess impact"]
-  
+
   state_inputs: ["cve_id", "cloned_repo_path", "cve_details"]
   state_outputs: ["is_vulnerable", "affected_packages", "is_false_alarm"]
-  
+
   requires_consent: false
   risk_level: low
-  
+
   is_retriable: true
   max_retries: 2
   retry_delay_ms: 1000
-  
+
   tasks:
-    - {type: "llm_call", description: "Analyze CVE impact on repo", target: "llm"}
-    - {type: "evaluate", description: "Match affected packages with go.mod"}
-    - {type: "store", description: "Write results to state"}
+    - {task_id: "t1", type: "llm_call", description: "Analyze CVE impact",
+       target: "llm", dependencies: [], parameters: {...}}
+    - {task_id: "t2", type: "evaluate", description: "Match packages with go.mod",
+       dependencies: ["t1"], parameters: {...}}
+    - {task_id: "t3", type: "store", description: "Write results to state",
+       dependencies: ["t2"], parameters: {...}}
 ```
 
 #### 3.2.2 Tool Categories
@@ -231,15 +258,142 @@ Tool: assess_cve
 ```
 ToolRegistry {
     tools: Map<tool_name, Tool>
-    capability_index: Map<keyword, tool_name[]>   // For fast intent matching
-    
+
     // Methods
     register(tool: Tool)
     get_by_name(name: string) → Tool
-    match_capabilities(keywords: string[]) → Tool[]
     get_by_category(category: string) → Tool[]
+    get_all_tools() → Tool[]            // For LLM prompt context
 }
 ```
+
+**Capability Matching:**
+- **LLM-Driven**: No complex keyword indexing needed
+- Planner receives full tool list with descriptions and capabilities
+- LLM selects relevant tools based on user intent
+- Simple and flexible; adapts to novel requests
+
+---
+
+#### 3.2.4 MCP Server Integration
+
+**Model Context Protocol (MCP)** servers are integrated as standard tools in the Tool Registry, supporting both stdio and HTTP/SSE transport modes.
+
+**MCP Tool Configuration:**
+
+```
+MCPTool extends Tool {
+    // Standard Tool fields
+    name: string
+    display_name: string
+    description: string
+    category: "external"
+
+    // MCP-specific fields
+    mcp_config: {
+        transport: "stdio" | "http"
+
+        // stdio configuration
+        stdio?: {
+            command: string             // e.g., "npx"
+            args: string[]              // e.g., ["-y", "@modelcontextprotocol/server-filesystem"]
+            env: dict                   // Environment variables
+            per_session: boolean        // true = new process per session, false = shared (NOT SUPPORTED)
+        }
+
+        // HTTP configuration
+        http?: {
+            url: string                 // e.g., "http://localhost:3000/mcp"
+            health_check_url: string    // e.g., "http://localhost:3000/health"
+            health_check_interval_ms: number  // Default: 30000 (30s)
+            headers: dict               // Optional auth headers
+        }
+
+        // MCP server capabilities (discovered via tools/list)
+        available_tools: MCPServerTool[]
+    }
+}
+
+MCPServerTool {
+    name: string                        // Tool name from MCP server
+    description: string
+    input_schema: dict                  // JSON schema for parameters
+}
+```
+
+**Example MCP Tool Definitions:**
+
+```yaml
+# stdio MCP Server (Browser)
+- name: mcp_browser
+  display_name: "Browser Automation"
+  description: "Control browser for web interactions"
+  category: external
+  requires_consent: true
+  risk_level: medium
+  is_retriable: true
+  max_retries: 1
+  retry_delay_ms: 2000
+
+  mcp_config:
+    transport: stdio
+    stdio:
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-puppeteer"]
+      env: {}
+      per_session: true               # New browser instance per session
+    available_tools:
+      - {name: "puppeteer_navigate", description: "Navigate to URL", input_schema: {...}}
+      - {name: "puppeteer_screenshot", description: "Take screenshot", input_schema: {...}}
+
+# HTTP MCP Server (JIRA)
+- name: mcp_jira
+  display_name: "JIRA Integration"
+  description: "Fetch and update JIRA issues"
+  category: external
+  requires_consent: true
+  risk_level: high
+  is_retriable: true
+  max_retries: 2
+  retry_delay_ms: 1000
+
+  mcp_config:
+    transport: http
+    http:
+      url: "http://jira-mcp-server:3000/mcp"
+      health_check_url: "http://jira-mcp-server:3000/health"
+      health_check_interval_ms: 30000
+      headers:
+        Authorization: "Bearer ${JIRA_MCP_TOKEN}"
+    available_tools:
+      - {name: "jira_get_issue", description: "Fetch JIRA issue", input_schema: {...}}
+      - {name: "jira_create_issue", description: "Create JIRA issue", input_schema: {...}}
+```
+
+**MCP Server Lifecycle Management:**
+
+| Transport | Lifecycle | Health Check | Error Handling |
+|-----------|-----------|--------------|----------------|
+| **stdio** | Spawned per session (configurable), terminated on session end | Process exit monitoring | Auto-restart on crash (max 3 attempts) |
+| **HTTP** | Pre-started external service | HTTP health endpoint polled every 30s | Skip tool execution if unhealthy, notify user |
+
+**MCP Tool Execution Flow:**
+
+```
+1. Planner selects MCP tool (e.g., "mcp_browser.puppeteer_navigate")
+2. Executor checks:
+   ├── stdio: Is process running? If not, spawn and wait for ready
+   ├── http: Is server healthy? If not, skip and notify user
+3. Executor sends JSON-RPC 2.0 request to MCP server
+4. MCP server executes and returns result
+5. Tool writes result to state.data
+6. Executor continues to next step
+```
+
+**MCP Tool Discovery (Optional):**
+- MCP servers can be auto-discovered via `tools/list` JSON-RPC call
+- Discovered tools added to Tool Registry at startup
+- Enables dynamic tool availability based on MCP server state
 
 ---
 
@@ -265,8 +419,9 @@ ToolRegistry {
 
 **2. Thinking/Planning Panel (Collapsible)**
 - Default: Collapsed with summary ("🧠 Planning...")
-- Expanded: Shows full reasoning chain
+- Expanded: Shows high-level reasoning steps (not full LLM stream)
 - Live updates during planning
+- Example steps: "Analyzing user intent...", "Identified tools: fetch_cve, assess_cve", "Creating execution plan..."
 - Reasoning steps with timestamps
 
 **3. Execution Plan Panel**
@@ -287,7 +442,8 @@ ToolRegistry {
 - Product name
 - Custom CSS injection point
 
-**6. Dashboard App (Separate Application - Admin Only)**
+**6. Dashboard View (Admin Only - Same React App, Different Route)**
+- Accessible via `/dashboard` route in the same React app
 - Session History Table: Time, request, status, rating, duration, tools used
 - Summary Stats Cards: Total sessions, success rate, avg rating, avg duration
 - Tool Performance Chart: Success rate per tool (horizontal bar)
@@ -295,6 +451,7 @@ ToolRegistry {
 - Recent Feedback List: 👍/👎 with comments and tool context
 - Date Filters: Last 7 days, Last 30 days, All time
 - User Authentication: Admin role required for access
+- **Uses same backend container as chat** - queries historical data via REST API
 
 #### 3.3.3 Branding Configuration Schema
 
@@ -372,7 +529,7 @@ Tool Registry Entry:
 | `requires_consent` | Determines if `pending_consent` is populated before execution |
 | `risk_level` | Used with `consent_mode` to determine if consent is auto-approved |
 | `is_retriable` | Executor checks this before attempting retry on failure |
-| `max_retries` | Compared against `state.data.retry_count` to decide retry vs. abort |
+| `max_retries` | Compared against `state.data.step_retry_counts[step_id]` to decide retry vs. ask Planner |
 | `retry_delay_ms` | Executor waits this duration before retry attempt |
 
 **Pre-Execution Validation Flow:**
@@ -456,16 +613,17 @@ SessionState {
     user_id: string | null
     created_at: timestamp
     last_activity: timestamp
-    
+    idle_timeout_ms: number             // Default: 300000 (5 mins), configurable
+
     // === Conversation ===
     messages: Message[]
-    
+
     // === Execution Context ===
     current_plan: Plan | null
     execution_status: ExecutionStatus
     pending_consent: ConsentRequest | null
     current_step_index: number
-    
+
     // === Central Data Store (Tool I/O) ===
     // Each tool reads from and writes to this shared data
     data: {
@@ -474,46 +632,58 @@ SessionState {
         repo_url: string | null
         repo_version: string | null
         cloned_repo_path: string | null
-        
+
         // CVE Analysis Results
         cve_details: CVEDetails | null
         affected_packages: AffectedPackage[] | null
         is_vulnerable: boolean | null
         is_false_alarm: boolean | null
-        
+
         // Remediation State
         fix_available: boolean | null
         fix_version: string | null
         go_mod_updated: boolean | null
         version_changes: VersionChange[] | null
-        
+
         // Test Results
         build_success: boolean | null
         test_success: boolean | null
         test_logs: string | null
-        
+
         // Output
         pr_url: string | null
         summary: string | null
-        
-        // Error Tracking
+
+        // Error Tracking (per step)
         last_error: string | null
         last_error_step: string | null
-        retry_count: number
+        step_retry_counts: Map<step_id, number>  // Retry count per step (NOT global)
     }
-    
+
     // === Tool Execution History ===
     tool_results: Map<step_id, ToolResult>
-    
+
     // === User Preferences ===
     consent_mode: string
-    
+
     // === Session Metrics ===
     total_tools_executed: number
     total_approvals: number
     total_rejections: number
+
+    // === Feedback (persisted to DB on session completion) ===
+    feedback: {
+        step_ratings: Map<step_id, "positive" | "negative">
+        session_rating: number | null   // 1-5 stars
+        comments: string[]              // Optional user comments
+    }
 }
 ```
+
+**Session Timeout Behavior:**
+- If `last_activity` exceeds `idle_timeout_ms`, session is marked as timed out
+- User receives notification: "Session timed out due to inactivity. Please refresh."
+- Session data remains in memory for potential recovery (configurable retention)
 
 #### 3.4.4 Tool ↔ State Interaction Pattern
 
@@ -558,24 +728,26 @@ The Executor uses current state to make intelligent decisions:
 │                    EXECUTOR DECISION LOGIC                                   │
 │                                                                              │
 │  BEFORE each step:                                                           │
+│  ├── Check step dependencies are satisfied (can run in parallel if none)    │
 │  ├── Check state.data for required inputs                                   │
-│  ├── If inputs missing → skip step or request re-plan                      │
+│  ├── If inputs missing → skip step or request re-plan from Planner         │
 │  └── If precondition not met → evaluate skip vs. fail                       │
 │                                                                              │
 │  AFTER step success:                                                         │
-│  ├── Verify state was updated correctly                                     │
+│  ├── Verify state was updated correctly (check state_outputs)              │
 │  ├── Check if downstream steps are now viable                               │
-│  └── Proceed to next step                                                    │
+│  ├── Send step_progress update to frontend                                  │
+│  └── Proceed to next step (or parallel steps if dependencies met)           │
 │                                                                              │
 │  AFTER step failure:                                                         │
 │  ├── Read state.data.last_error for context                                │
 │  ├── Get tool.is_retriable and tool.max_retries from Tool Registry        │
-│  ├── Check state.data.retry_count against tool.max_retries                 │
+│  ├── Get step_retry_count from state.data.step_retry_counts[step_id]      │
 │  ├── Evaluate state to determine:                                           │
-│  │   ├── Can we retry? (tool.is_retriable AND retry_count < max_retries)  │
-│  │   ├── Can we skip and continue? (check if downstream has alternatives)  │
-│  │   └── Must we abort? (critical state missing)                           │
-│  └── Update state.data.last_error_step and state.data.retry_count          │
+│  │   ├── Can we retry? (tool.is_retriable AND step_retry_count < max_retries)│
+│  │   ├── If yes: Increment step_retry_counts[step_id], wait retry_delay_ms│
+│  │   └── If no: Ask Planner for recovery plan (automatic LLM decision)     │
+│  └── Update state.data.last_error_step and step_retry_counts[step_id]     │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -584,9 +756,9 @@ The Executor uses current state to make intelligent decisions:
 
 | Condition | Source | Executor Decision |
 |-----------|--------|-------------------|
-| `tool.is_retriable == true` AND `state.retry_count < tool.max_retries` | Tool Registry + State | Retry with delay (`tool.retry_delay_ms`) |
-| `tool.is_retriable == false` OR `state.retry_count >= tool.max_retries` | Tool Registry + State | Ask Planner for alternative or abort |
-| Required input `null` in `state.data` | State | Skip step, log warning |
+| `tool.is_retriable == true` AND `step_retry_count < tool.max_retries` | Tool Registry + State | Retry with delay (`tool.retry_delay_ms`) |
+| `tool.is_retriable == false` OR `step_retry_count >= tool.max_retries` | Tool Registry + State | Ask Planner for recovery plan (automatic LLM-driven) |
+| Required input `null` in `state.data` | State | Skip step, log warning, ask Planner for re-sequence |
 | `state.is_false_alarm == true` | State | Skip remediation steps, go to summary |
 | `state.fix_available == false` | State | Skip apply_fix, generate "no fix" report |
 | `state.test_success == false` AND retriable | Tool Registry + State | Retry with Planner guidance |
@@ -600,7 +772,7 @@ The Executor uses current state to make intelligent decisions:
 | `max_retries` | Tool Registry | Defined per tool (e.g., API tools: 3, LLM tools: 2) |
 | `is_retriable` | Tool Registry | Whether tool can be retried on failure |
 | `retry_delay_ms` | Tool Registry | Wait time between retries |
-| `retry_count` | State | Current attempt count (starts at 0, incremented by Executor) |
+| `step_retry_count` | State | Current retry count for this specific step (NOT global) |
 | `last_error` | State | Error message from last failure |
 | `last_error_step` | State | Step ID that last failed |
 
@@ -631,7 +803,90 @@ App Config (config files / environment):
 ├── tool_registry.yaml       // Tool definitions, state_inputs/outputs, retry policies
 ├── branding_config.yaml     // White-label theming, logos, colors
 ├── llm_config.yaml          // LLM provider, model, API keys
-└── system_config.yaml       // Feature flags, timeouts, defaults
+├── mcp_servers.yaml         // MCP server configurations
+└── system_config.yaml       // Feature flags, timeouts, defaults, rate limits
+```
+
+**LLM Configuration Schema (llm_config.yaml):**
+
+```yaml
+llm_config:
+  provider: "openai" | "gemini" | "anthropic" | "ollama"
+  model: "gpt-4o" | "gemini-2.0-flash-exp" | "claude-sonnet-4" | "llama3:latest"
+  api_key: "${LLM_API_KEY}"          # From environment variable
+  base_url: "https://api.openai.com/v1"  # Optional: for custom endpoints
+
+  # Planner LLM settings
+  planner:
+    temperature: 0.1                  # Low temp for consistent planning
+    max_tokens: 4096
+    timeout_seconds: 30
+    system_prompt_template: "planner_system_prompt.txt"
+
+  # Tool LLM calls (used within tools)
+  tool_llm_calls:
+    temperature: 0.3                  # Slightly higher for creative analysis
+    max_tokens: 2048
+    timeout_seconds: 20
+
+  # Fallback configuration (optional)
+  fallback:
+    enabled: true
+    provider: "gemini"
+    model: "gemini-1.5-flash"
+    trigger_on: ["timeout", "rate_limit", "model_unavailable"]
+```
+
+**System Configuration Schema (system_config.yaml):**
+
+```yaml
+system_config:
+  # Session settings
+  session:
+    idle_timeout_ms: 300000           # 5 minutes default
+    consent_timeout_seconds: 300      # 5 minutes default
+    max_active_sessions: 100          # Per backend instance
+
+  # Rate limiting
+  rate_limits:
+    session_creation:
+      limit: 10                       # Requests per window
+      window_seconds: 3600            # 1 hour
+      scope: "user"                   # "user" or "ip"
+
+    api_endpoint:
+      limit: 100                      # Requests per window
+      window_seconds: 60              # 1 minute
+      scope: "api_key"
+
+    llm_calls:
+      limit: 50                       # Calls per session
+      scope: "session"
+
+    tool_executions:
+      limit: 100                      # Executions per session
+      scope: "session"
+
+  # Security
+  security:
+    session_secret: "${SESSION_SECRET}"  # From environment
+    api_key_bcrypt_rounds: 12
+    enable_message_signing: false
+    sign_message_types: ["consent_request", "plan_created"]
+
+  # Feature flags
+  features:
+    enable_feedback: true
+    enable_mcp_servers: true
+    enable_parallel_steps: true
+    enable_auto_recovery: true       # LLM-driven error recovery
+
+  # WebSocket settings
+  websocket:
+    ping_interval_seconds: 30
+    max_message_size_bytes: 1048576  # 1 MB
+
+  # Database settings (see DATABASE_CONFIG in Section 8.2)
 ```
 
 **Database (Lightweight - Historical Data Only):**
@@ -649,14 +904,15 @@ Database Tables:
 RuntimeState {
     // Loaded from app config at startup
     tool_registry: Map<tool_name, Tool>
-    tool_capability_index: Map<keyword, tool_name[]>
     branding_config: BrandingConfig
     llm_config: LLMConfig
-    
-    // Active sessions (in-memory only until completed)
-    active_sessions: Map<session_id, SessionState>
+
+    // Active session (one per backend container)
+    session_state: SessionState
 }
 ```
+
+**Note:** Each ephemeral backend container holds state for exactly one session. No shared state between containers.
 
 **Storage Strategy:**
 
@@ -670,10 +926,11 @@ RuntimeState {
 | Feedback | User input → DB | Database | Persistent for analysis and improvement |
 
 **Session Persistence Strategy:**
-- Active sessions are kept in memory only during execution
-- Session state written to DB only when session is **completed** (success or failure)
-- In-progress sessions are not persisted (lost on server crash - acceptable trade-off for simplicity)
-- Completed sessions in DB available for Dashboard analytics and audit
+- Active sessions are kept in memory within their dedicated backend container
+- Each container manages exactly one session (ephemeral 1:1 mapping)
+- Session state written to PostgreSQL only when session **completes** (success or failure)
+- In-progress sessions are not persisted (lost on container crash - acceptable for ephemeral architecture)
+- Completed sessions in DB available for Dashboard analytics via `/dashboard` route
 
 ---
 
@@ -687,8 +944,8 @@ The feedback system is designed to be **non-blocking** and **lightweight** - it 
 |-----------|-------------|
 | **Non-Blocking** | Feedback submission is fire-and-forget; never waits for DB write |
 | **Optional & Unobtrusive** | Small UI elements; user can ignore without penalty |
-| **No Analytics Dashboard** | No separate admin UI; feedback accessed via bot tool |
-| **On-Demand Insights** | Users query feedback stats by asking the bot directly |
+| **Dashboard Integration** | Feedback visible in `/dashboard` route (admin only) via REST API queries |
+| **On-Demand Analytics** | Admins query feedback metrics through dashboard interface |
 
 #### 3.5.2 Feedback Collection Points
 
@@ -777,20 +1034,8 @@ Feedback follows the same persistence strategy as session state:
 
 | Phase | Storage | Notes |
 |-------|---------|-------|
-| During active session | In-memory (part of SessionState) | Feedback collected as user interacts |
-| On session completion | Written to DB | Persisted along with session data |
-
-**SessionState.feedback:**
-```
-SessionState {
-    ...
-    feedback: {
-        step_ratings: Map<step_id, "positive" | "negative">
-        session_rating: number | null        // 1-5 stars
-        comments: string[]                   // Optional user comments
-    }
-}
-```
+| During active session | In-memory (part of SessionState.feedback) | Feedback collected as user interacts |
+| On session completion | Written to DB | Persisted along with session data to `feedback` table |
 
 On session completion, feedback is persisted to the `feedback` table in DB and available for the `fetch_feedback_insights` tool to query.
 
@@ -815,36 +1060,72 @@ This section explains the core architectural decision to use **LLM-driven dynami
 │                         PLANNER (LLM)                                        │
 │  Inputs:                                                                     │
 │  ├── User prompt                                                            │
-│  ├── Tool Registry (with capabilities)                                      │
+│  ├── Full Tool Registry (all tools with descriptions + capabilities)        │
+│  │   └── LLM selects relevant tools (no keyword matching needed)           │
 │  └── Current state.data                                                     │
 │                                                                              │
 │  Output: Execution Plan                                                      │
 │  { steps: [{tool, params, depends_on}, ...] }                               │
+│                                                                              │
+│  Thinking Stream (high-level):                                              │
+│  - "Analyzing user intent..."                                               │
+│  - "Identified tools: fetch_cve_data, assess_cve, create_pr"                │
+│  - "Creating execution plan with 6 steps..."                                │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         EXECUTOR                                             │
-│  For each step:                                                              │
+│  For each step (can run parallel if no dependencies):                       │
+│  ├── Check step dependencies satisfied                                      │
 │  ├── Check state.data for required inputs                                   │
-│  ├── Request consent if tool.requires_consent                               │
+│  ├── Request consent if tool.requires_consent (with timeout)                │
 │  ├── Execute tool → tool writes to state.data                               │
-│  └── On failure → ask Planner for recovery plan                             │
+│  ├── Send step_progress update to frontend                                  │
+│  └── On failure → ask Planner for recovery plan (automatic LLM decision)    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 4.3 Re-Planning on Failure
 
-When a step fails, Executor asks Planner for recovery:
+When a step fails and retries are exhausted, Executor asks Planner for automatic recovery (LLM-driven decision):
 
+**Recovery Request:**
 ```
-Executor → Planner: {error, failed_step, completed_steps, state.data}
+Executor → Planner: {
+    error: string,
+    failed_step: PlanStep,
+    completed_steps: PlanStep[],
+    current_state: state.data,
+    remaining_steps: PlanStep[]
+}
+```
 
-Planner responds:
-├── retry with different params
-├── skip and continue
-└── abort with explanation
+**Recovery Plan Response:**
 ```
+RecoveryPlan {
+    strategy: "retry" | "skip" | "abort" | "replan"
+
+    // For "retry" strategy
+    modified_step: PlanStep | null      // Retry with different parameters
+
+    // For "replan" strategy
+    new_steps: PlanStep[] | null        // Replacement steps for remaining plan
+
+    // For all strategies
+    explanation: string                 // Why this recovery approach (shown to user)
+    user_notification: string           // Message to display in chat
+}
+```
+
+**Example Recovery Scenarios:**
+
+| Failure | Planner Decision | Explanation |
+|---------|------------------|-------------|
+| OSV API timeout | Retry with NVD API instead | "OSV API unreachable, trying NVD API" |
+| No vulnerable packages found | Skip to summary | "Repository not affected, skipping remediation" |
+| GitHub PR creation failed (auth) | Abort | "GitHub authentication failed, cannot create PR" |
+| Build tests fail after patch | Replan with rollback steps | "Tests failed, rolling back changes" |
 
 ### 4.4 Capability Not Available
 
@@ -866,48 +1147,84 @@ This section consolidates all communication protocols and interfaces for the bot
 
 ### 5.1 Protocol Summary
 
-| Client | Protocol | Format | Auth | Use Case |
-|--------|----------|--------|------|----------|
-| Chat App | WebSocket (WSS) | JSON messages | Session token | Real-time interactive chat |
-| Dashboard App | REST/HTTPS | JSON | Session token | View sessions, analytics, feedback |
+| Client / Component | Protocol | Format | Auth | Use Case |
+|-------------------|----------|--------|------|----------|
+| React App (/chat route) | WebSocket (WSS) | JSON messages | Session token (JWT) | Real-time interactive chat |
+| React App (/dashboard route) | REST/HTTPS | JSON | Session token (JWT) | View sessions, analytics, feedback |
 | API Clients (ARC, Scripts, CI/CD) | REST/HTTPS | JSON | API key (Bearer) | Programmatic automation |
 | Backend → LLM Provider | REST/HTTPS | OpenAI-compatible JSON | API key | Planning, tool execution |
 | Backend → External APIs | REST/HTTPS | JSON | Per-service auth | GitHub, OSV/NVD, etc. |
 | Backend → MCP Servers | MCP Protocol (stdio/HTTP) | JSON-RPC 2.0 | N/A (local) | Browser, Files, JIRA |
 
+**Note:** Both `/chat` and `/dashboard` routes connect to the **same ephemeral backend container** for a given session.
+
 ---
 
-### 5.2 Chat App (WebSocket)
+### 5.2 WebSocket Communication (Chat Route)
 
-Real-time bidirectional communication for interactive chat experience.
+Real-time bidirectional communication for interactive chat experience via `/chat` route in React app.
 
-**Protocol:** `wss://<host>/ws/{session_id}`
+**Protocol:** `wss://<container>/ws/{session_id}`
 
 **Connection Flow:**
-1. `POST /api/v1/sessions` → returns `session_id`
-2. WebSocket connect to `/ws/{session_id}`
-3. Bidirectional message stream until disconnect
+1. React app loads → `POST /api/v1/sessions` (to Session Gateway)
+2. Gateway spawns dedicated backend container → Returns container URLs + session token
+3. React app connects:
+   - `/chat` route → WebSocket to dedicated container
+   - `/dashboard` route → REST API to same dedicated container
+4. Bidirectional communication until session ends
 
-**Chat App → Backend:**
+**Session Creation Endpoint:**
+
+```
+POST /api/v1/sessions (handled by Session Gateway)
+
+Request:
+{
+    "user_id": "user@example.com",    // Optional (for authenticated users)
+    "consent_mode": "step_by_step" | "bulk_approve_all" | "bulk_approve_low" | "bulk_approve_low_medium" | "skip_confirmation"
+}
+
+Response:
+{
+    "session_id": "sess-abc123def456",
+    "container_id": "container-a1b2c3",
+    "websocket_url": "wss://container-a1b2c3.cluster/ws/sess-abc123def456",  // Chat route
+    "api_base_url": "https://container-a1b2c3.cluster/api/v1",              // Dashboard route
+    "session_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",              // JWT token
+    "expires_at": "2026-02-04T13:00:00Z",
+    "idle_timeout_ms": 300000         // 5 minutes
+}
+```
+
+**Authentication:**
+- Include `session_token` as query parameter: `/ws/{session_id}?token={session_token}` (WebSocket)
+- OR include in Authorization header: `Authorization: Bearer {session_token}` (REST API)
+- Token validated on connection; invalid token returns 403
+
+**React App → Backend (WebSocket):**
 
 | Type | Purpose | Payload |
 |------|---------|---------|
 | `chat` | User sends message | `{content: string}` |
 | `consent_response` | User approves/rejects | `ConsentResponse` |
+| `feedback_submit` | User submits feedback (👍/👎/⭐) | `{step_id?: string, rating?: 1-5, sentiment?: "positive"\|"negative", comment?: string}` |
 | `cancel_execution` | Stop current plan | `{plan_id}` |
 | `pong` | Response to ping | `{}` |
 
-**Backend → Chat App:**
+**Backend → React App (WebSocket):**
 
 | Type | Purpose | Payload |
 |------|---------|---------|
-| `thinking_update` | Reasoning stream | `{step: string}` |
+| `thinking_update` | Reasoning stream (high-level steps) | `{step: string}` |
 | `plan_created` | Plan ready | `{plan: Plan}` |
 | `consent_request` | Ask for approval | `ConsentRequest` |
+| `consent_timeout` | Consent request timed out | `{request_id, message: "Consent timeout. Execution stopped."}` |
 | `step_started` | Tool begins | `{step_id, tool_name}` |
 | `step_progress` | During execution | `{step_id, progress: string}` |
 | `step_completed` | Tool finishes | `{step_id, success, result/error}` |
 | `plan_completed` | All steps done | `{plan_id, summary}` |
+| `session_timeout` | Session idle timeout | `{message: "Session timed out. Please refresh."}` |
 | `error` | On failure | `{message, recoverable}` |
 | `ping` | Keepalive (every 30s) | `{}` |
 
@@ -920,18 +1237,20 @@ Real-time bidirectional communication for interactive chat experience.
 
 ---
 
-### 5.3 Dashboard App (REST)
+### 5.3 Dashboard REST API
 
-Standard REST API for admin dashboard to view historical data.
+Dashboard route (`/dashboard` in React app) queries historical data via REST API from the same backend container.
 
-**Base URL:** `https://<host>/api/v1`
+**Base URL:** `https://<container>/api/v1` (same backend as chat)
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| `GET` | `/sessions` | List completed sessions (with filters) |
-| `GET` | `/sessions/{id}` | Get session details |
-| `GET` | `/feedback` | Get feedback records |
-| `GET` | `/analytics/summary` | Aggregated metrics |
+| Method | Endpoint | Purpose | Access |
+|--------|----------|---------|--------|
+| `GET` | `/sessions` | List completed sessions (with filters) | Admin only |
+| `GET` | `/sessions/{id}` | Get session details | Admin only |
+| `GET` | `/feedback` | Get feedback records | Admin only |
+| `GET` | `/analytics/summary` | Aggregated metrics | Admin only |
+
+**Note:** These endpoints query PostgreSQL for historical data, not in-memory session state.
 
 ---
 
@@ -1063,19 +1382,105 @@ If `callback_url` is provided, backend sends POST on completion:
 
 ### 6.1 Authentication & Authorization
 
-| Layer | Mechanism |
-|-------|-----------|
-| Frontend → Backend | HMAC-signed requests (server-side) |
-| Backend → External APIs | API keys (environment variables) |
-| Session Management | UUID-based sessions with timeout |
-| Dashboard Access | Role-based (admin only) |
+#### 6.1.1 Session Tokens (Chat App WebSocket)
 
-**User Roles:**
+**Mechanism:** JWT (JSON Web Tokens) with HS256 (HMAC-SHA256)
+
+```
+Token Payload:
+{
+    "session_id": "sess-abc123",
+    "user_id": "user@example.com",
+    "role": "user" | "admin",
+    "exp": 1738675200            // Expiration timestamp (1 hour)
+}
+
+Signing Secret: Loaded from environment variable (SESSION_SECRET)
+```
+
+**Validation:**
+- On WebSocket connection establishment
+- Can be optionally validated on each critical message (configurable)
+- Invalid/expired token → close connection with 403
+
+**Token Lifecycle:**
+- Issued on session creation (`POST /api/v1/sessions`)
+- Short expiry (1 hour default, configurable)
+- No refresh mechanism; user creates new session after expiry
+
+---
+
+#### 6.1.2 API Keys (Programmatic API)
+
+**Mechanism:** UUID v4 with bcrypt hashing
+
+```
+Key Format: ocp_bot_1a2b3c4d5e6f7g8h9i0j...  (prefix for identification)
+
+Storage:
+- Keys stored as bcrypt hashes in database (never plaintext)
+- Bcrypt work factor: 12 (configurable)
+
+Scopes:
+- read: Query sessions, tools, analytics
+- execute: Submit queries, limited to bulk_approve_low consent mode
+- execute:auto_approve: Full execution with bulk_approve_all
+```
+
+**Validation:**
+- On every API request (Authorization: Bearer header)
+- Constant-time comparison to prevent timing attacks
+- Failed attempts logged for security monitoring
+
+**Key Management:**
+- API keys created via admin interface or CLI
+- Support for key rotation (mark old key as deprecated, issue new)
+- Keys can be revoked immediately (soft delete in DB)
+
+---
+
+#### 6.1.3 Message Integrity (Optional - If Enabled)
+
+**Mechanism:** HMAC-SHA256 payload signing
+
+```
+For sensitive WebSocket messages:
+1. Backend generates HMAC signature: HMAC-SHA256(message_payload, session_secret)
+2. Sends message with signature: {type, payload, signature}
+3. Frontend validates signature (if configured)
+
+Use case: Prevent message tampering in untrusted network environments
+```
+
+**Configuration:**
+```yaml
+security:
+  enable_message_signing: false       # Default: disabled for performance
+  sign_message_types: ["consent_request", "plan_created"]  # Only sign critical messages
+```
+
+---
+
+#### 6.1.4 Rate Limiting
+
+| Type | Limit | Scope | Action on Exceed |
+|------|-------|-------|------------------|
+| **Session Creation** | 10 sessions/hour | Per user (if authenticated) or per IP | HTTP 429, retry-after header |
+| **API Endpoint** | 100 requests/minute | Per API key | HTTP 429, exponential backoff recommended |
+| **LLM Calls** | 50 calls/session | Per session | Abort execution, notify user "LLM quota exceeded" |
+
+**Implementation:**
+- In-memory token bucket algorithm (Redis for distributed deployments)
+- Configurable limits per environment (dev, staging, prod)
+
+---
+
+#### 6.1.5 User Roles
 
 | Role | Permissions |
 |------|-------------|
 | `user` | Chat access, own session history |
-| `admin` | Chat access, Dashboard access, all session history, analytics |
+| `admin` | Chat access, Dashboard access, all session history, analytics, user management |
 
 ### 6.2 Tool Execution Safety
 
@@ -1106,11 +1511,11 @@ If `callback_url` is provided, backend sends POST on completion:
 | **Backend Framework** | Python + FastAPI | Native async support, automatic Pydantic validation, WebSocket built-in, excellent for AI/ML integrations |
 | **Real-time Communication** | WebSocket (native) | Bidirectional streaming required for thinking/progress updates, lower latency than polling |
 | **LLM Provider** | Any LLM with function calling (e.g., Gemini, OpenAI, Claude, Ollama) | Configurable; requires structured output and function calling support |
-| **Active Session Store** | In-memory (Pydantic model / Python dict) | Fast during execution; no DB latency for active sessions |
-| **Persistent Database** | SQLite (dev) / PostgreSQL (prod) | SQLite for local dev (zero config), PostgreSQL for multi-container production |
+| **Active Session Store** | In-memory (Pydantic model / Python dict) | Fast during execution; one session per container |
+| **Persistent Database** | SQLite (dev) / PostgreSQL (prod) | SQLite for local dev (zero config), PostgreSQL for ephemeral container production |
 | **ORM** | SQLAlchemy | Supports both SQLite and PostgreSQL with same codebase |
-| **Containerization** | Docker | Portable, consistent environments across dev/staging/prod |
-| **Orchestration** | Docker Compose (dev) / Kubernetes (prod) | Simple local dev, scalable production deployment |
+| **Containerization** | Docker | Ephemeral containers (1:1 session-to-container mapping) |
+| **Orchestration** | Platform-agnostic | Supports Kubernetes, Serverless (Cloud Run/Lambda), or other orchestrators |
 
 ---
 
@@ -1152,8 +1557,8 @@ DATABASE_CONFIG {
 
 | Mode | Database | Use Case |
 |------|----------|----------|
-| **Local/Dev** | SQLite | Single developer, quick setup, file-based |
-| **Production** | PostgreSQL | Multi-container deployment, concurrent access, scalable |
+| **Local/Dev** | SQLite | Single developer, quick setup, file-based, simpler for testing |
+| **Production** | PostgreSQL | Ephemeral container deployment, shared historical storage, concurrent writes from multiple containers |
 
 ### 8.3 Data Model
 
@@ -1169,26 +1574,190 @@ Core entities stored in the database:
 
 > **Note:** Detailed schemas, entity relationships, and archival flows are documented separately in the Database Design Document.
 
-### 8.4 Scalable Architecture
+### 8.4 Ephemeral Container Architecture (1:1 Session-to-Container)
 
-For production deployments where each session runs in a separate backend container:
+**Production Deployment** uses ephemeral backend containers with **1:1 mapping per session**.
 
-- **Chat App**: Standalone React app for user interactions (WebSocket → Backend)
-- **Dashboard App**: Standalone React app for admin analytics (REST API → Backend/DB)
-- **Backend Containers**: One per active session, state held in-memory, serves both apps
-- **Central Database**: PostgreSQL container for persistent storage
-- **Session Archival**: On session end, data pushed to central DB
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          FRONTEND (Single React App)                      │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │   React App (Chat + Dashboard)                                   │    │
+│  │   ├── /chat route      → WebSocket to dedicated container        │    │
+│  │   └── /dashboard route → REST API to same dedicated container    │    │
+│  └────────┬─────────────────────────────────────────────────────────┘    │
+│           │                                                               │
+└───────────┼───────────────────────────────────────────────────────────────┘
+            │
+            │ Session Creation / Query Submission
+            │
+┌───────────▼───────────────────────────────────────────────────────────────┐
+│                    SESSION GATEWAY / ORCHESTRATOR                          │
+│  - Spawns ephemeral backend containers (K8s Pods/Jobs or Serverless)     │
+│  - Routes requests to appropriate container                               │
+│  - Manages container lifecycle (creation, termination)                    │
+└───────────┬───────────────────────────────────────────────────────────────┘
+            │
+            │ Spawns containers on-demand
+            │
+┌───────────▼───────────────────────────────────────────────────────────────┐
+│                    EPHEMERAL BACKEND CONTAINERS                            │
+│                                                                            │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐           │
+│  │ Container A     │  │ Container B     │  │ Container C     │           │
+│  │ (UI Session 1)  │  │ (UI Session 2)  │  │ (API Query 1)   │           │
+│  │                 │  │                 │  │                 │           │
+│  │ • WebSocket     │  │ • WebSocket     │  │ • REST only     │           │
+│  │ • REST API      │  │ • REST API      │  │ • Executes      │           │
+│  │ • Session State │  │ • Session State │  │   query         │           │
+│  │ • Chat + Dash   │  │ • Chat + Dash   │  │                 │           │
+│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘           │
+│           │                    │                     │                    │
+└───────────┼────────────────────┼─────────────────────┼────────────────────┘
+            │                    │                     │
+            └────────────────────┴─────────────────────┘
+                                 │
+                    ┌────────────▼─────────────┐
+                    │   PostgreSQL Database    │
+                    │   (Shared Historical)    │
+                    │                          │
+                    │   - Completed sessions   │
+                    │   - Feedback records     │
+                    │   - Analytics data       │
+                    └──────────────────────────┘
+```
+
+---
+
+#### 8.4.1 Component Responsibilities
+
+| Component | Purpose | Lifespan |
+|-----------|---------|----------|
+| **React App** | Single UI with Chat and Dashboard routes | Static (served via CDN/nginx) |
+| **Session Gateway** | Spawns/routes to backend containers | Always running |
+| **Backend Container** | Handles one session (WebSocket + REST API) | Ephemeral (created per session, terminated on completion) |
+| **PostgreSQL** | Persistent historical storage | Always running |
+
+---
+
+#### 8.4.2 Session Lifecycle
+
+**UI Session (Chat + Dashboard):**
+
+```
+1. User opens app → POST /api/v1/sessions (to Gateway)
+   ↓
+2. Gateway spawns Container A (K8s Pod or Serverless instance)
+   ↓
+3. Gateway returns:
+   {
+     session_id: "sess-abc123",
+     websocket_url: "wss://container-a.cluster/ws/sess-abc123",
+     api_base_url: "https://container-a.cluster/api/v1",
+     session_token: "jwt-token"
+   }
+   ↓
+4. React App connects:
+   - /chat route → WebSocket to wss://container-a.cluster/ws/sess-abc123
+   - /dashboard route → REST to https://container-a.cluster/api/v1/sessions, /analytics
+   ↓
+5. User interacts (chat, views dashboard) → Container A handles everything
+   ↓
+6. Session ends (completion or timeout):
+   - Container A writes final state to PostgreSQL
+   - Container A terminates (graceful shutdown)
+```
+
+**Programmatic API Session (CI/CD, Scripts):**
+
+```
+1. API client → POST /api/v1/queries (to Gateway)
+   ↓
+2. Gateway spawns Container B
+   ↓
+3. Gateway returns:
+   {
+     query_id: "q-xyz789",
+     status_url: "https://container-b.cluster/api/v1/queries/q-xyz789"
+   }
+   ↓
+4. API client polls GET https://container-b.cluster/api/v1/queries/q-xyz789
+   ↓
+5. Container B executes query → Writes results to PostgreSQL → Terminates
+```
+
+---
+
+#### 8.4.3 Backend Container Endpoints
+
+**Each ephemeral backend container serves:**
+
+| Endpoint Type | Path | Used By |
+|---------------|------|---------|
+| **WebSocket** | `/ws/{session_id}` | React App (/chat route) - real-time communication |
+| **Dashboard Queries** | `GET /api/v1/sessions`, `/feedback`, `/analytics` | React App (/dashboard route) - historical data |
+| **Programmatic API** | `POST /api/v1/queries`, `GET /api/v1/queries/{id}` | CI/CD, scripts - query execution |
+| **Utility** | `GET /api/v1/tools`, `/health` | All clients - tool discovery, health checks |
+
+**Note:** `POST /api/v1/sessions` (session creation) is handled by the **Session Gateway**, not the backend containers. The Gateway spawns containers and returns their URLs.
+
+---
+
+#### 8.4.4 Container Orchestration
+
+**The architecture supports multiple orchestration platforms:**
+
+- **Kubernetes / OpenShift**: Each session spawned as Job or Pod
+- **Serverless (Cloud Run, Lambda, etc.)**: Each session as serverless instance
+- **Decision deferred to deployment time** based on target environment
+
+**Requirements from orchestrator:**
+- Ability to spawn ephemeral containers on-demand
+- WebSocket support (for chat functionality)
+- Container lifecycle management (creation, termination)
+- Environment variable injection (session_id, database credentials)
+
+---
+
+#### 8.4.5 Scaling Characteristics
+
+| Metric | Behavior |
+|--------|----------|
+| **Concurrency** | Linear - 100 sessions = 100 containers |
+| **Resource Usage** | Isolated - each container has dedicated CPU/memory |
+| **Cost** | Pay-per-session (serverless) or per-pod-time (K8s) |
+| **Fault Isolation** | Complete - one container crash doesn't affect others |
+| **Startup Time** | Cold start (1-5s K8s, 0.5-2s serverless) |
+| **Max Sessions** | Limited by orchestrator capacity (thousands on K8s/serverless) |
+
+---
+
+#### 8.4.6 Session Gateway Responsibilities
+
+The Session Gateway is a lightweight service that:
+
+1. **Creates sessions** - Spawns backend containers
+2. **Routes requests** - Directs clients to correct container
+3. **Manages lifecycle** - Terminates containers on session end
+4. **Health checks** - Monitors container health
+5. **Load balancing** - Distributes sessions across cluster nodes (K8s scheduler handles this)
+
+**Implementation:**
+- Small always-running service (can be part of API gateway, ingress controller, or custom service)
+- Can be implemented as K8s Operator or simple REST service
 
 ### 8.5 Dashboard Access Control
 
-| Role | Chat App | Dashboard App |
-|------|----------|---------------|
-| `user` | ✓ Full access | ✗ No access |
+| Role | Chat Route (/chat) | Dashboard Route (/dashboard) |
+|------|-------------------|------------------------------|
+| `user` | ✓ Full access | ✗ No access (redirect to /chat) |
 | `admin` | ✓ Full access | ✓ Full access |
 
-- Dashboard App requires authentication with admin role
-- Backend validates role on all dashboard API endpoints (403 if unauthorized)
-- Separate deployments allow different access policies per app
+**Implementation:**
+- Frontend React Router checks user role before rendering `/dashboard` route
+- Backend validates role on all dashboard API endpoints (`GET /api/v1/sessions`, `/analytics`, etc.)
+- Returns 403 Forbidden if non-admin tries to access dashboard endpoints
+- Both chat and dashboard use same backend container and session
 
 ---
 
@@ -1214,12 +1783,14 @@ For production deployments where each session runs in a separate backend contain
 
 | Component | Role |
 |-----------|------|
-| **Clients** | Chat App (WSS), API Client (REST), Dashboard (REST) |
+| **Clients** | React App (/chat route via WSS, /dashboard route via REST), API Clients (REST) |
 | **Planner** | Receives intent, generates Plan Steps, interacts with State and LLM |
 | **Executor** | Runs steps in loop: Get Step → Consent → Run Tool → Success/Fail |
 | **Consent Manager** | Checks consent_mode for each step before execution |
 | **Tools** | Execute against External services (GitHub, JIRA, OSV/NVD, Browser, Files) |
 | **Feedback Handler** | Collects feedback, flushes State to Database on completion |
+
+**Note:** Single React App with both chat and dashboard functionality; each session uses one dedicated backend container.
 
 **Key Flows:**
 
@@ -1230,6 +1801,6 @@ For production deployments where each session runs in a separate backend contain
 
 ---
 
-*Document Version: 1.0*  
-*Last Updated: January 2026*
+*Document Version: 2.0*  
+*Last Updated: Feb 2026*
 
