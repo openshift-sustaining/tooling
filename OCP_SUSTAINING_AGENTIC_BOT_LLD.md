@@ -51,8 +51,7 @@ backend/
 │   ├── settings.py              # Pydantic settings (env vars)
 │   ├── tool_registry.yaml       # Tool definitions
 │   ├── llm_config.yaml          # LLM provider config
-│   ├── mcp_servers.yaml         # MCP server config
-│   └── branding_config.yaml     # White-label config
+│   └── mcp_servers.yaml         # MCP server config
 ├── models/
 │   ├── session.py               # SessionState, Plan, PlanStep
 │   ├── consent.py               # ConsentRequest, ConsentResponse
@@ -66,7 +65,8 @@ backend/
 │   ├── orchestrator/
 │   │   ├── planner.py           # Planner module
 │   │   ├── executor.py          # Executor module
-│   │   └── consent_manager.py  # Consent Manager
+│   │   ├── consent_manager.py  # Consent Manager
+│   │   └── response_moderator.py # Response Moderator (LLM-based)
 │   ├── tool_registry.py         # Tool Registry
 │   ├── state_manager.py         # Central State Manager
 │   └── mcp_client.py            # MCP server integration
@@ -509,38 +509,47 @@ class ConsentTimeoutPayload(BaseModel):
     message: str
 
 # 5. step_started
+# Triggers spinner display in chat with step description
 class StepStartedPayload(BaseModel):
     step_id: str
     tool_name: str
+    description: str  # Human-readable step description
 
 # 6. step_progress
 class StepProgressPayload(BaseModel):
     step_id: str
     progress: str
 
-# 7. step_completed
+# 7. assistant_message
+# LLM-moderated response (replaces spinner when step completes)
+class AssistantMessagePayload(BaseModel):
+    content: str  # Markdown-formatted message
+    metadata: Optional[Dict[str, Any]] = None  # step_id, tool_name, final_response flag
+
+# 8. step_completed
+# Internal event - not directly shown to user (assistant_message is sent instead)
 class StepCompletedPayload(BaseModel):
     step_id: str
     success: bool
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
-# 8. plan_completed
+# 9. plan_completed
 class PlanCompletedPayload(BaseModel):
     plan_id: str
     summary: str
 
-# 9. session_timeout
+# 10. session_timeout
 class SessionTimeoutPayload(BaseModel):
     message: str
 
-# 10. error
+# 11. error
 class ErrorPayload(BaseModel):
     message: str
     recoverable: bool
 
-# 11. ping
-# Empty payload
+# 12. ping
+# Empty payload - heartbeat to keep connection alive
 ```
 
 ---
@@ -980,7 +989,11 @@ class Executor:
         step.status = "executing"
 
         if progress_callback:
-            await progress_callback("step_started", {"step_id": step.step_id, "tool_name": step.tool_name})
+            await progress_callback("step_started", {
+                "step_id": step.step_id,
+                "tool_name": step.tool_name,
+                "description": step.description
+            })
 
         # Get tool from registry
         tool = self.tool_registry.get_by_name(step.tool_name)
@@ -1294,6 +1307,343 @@ class ConsentManager:
                 summary_parts.append(f"{key}: <complex>")
 
         return ", ".join(summary_parts)
+```
+
+---
+
+### 4.4 Response Moderator
+
+**Purpose:** Converts raw tool execution results into human-readable chat messages using LLM. Operates at two levels:
+1. **Step-level**: After each tool execution, generates contextual progress updates
+2. **Plan-level**: After plan completion, generates comprehensive final answer to user's question
+
+```python
+# core/orchestrator/response_moderator.py
+
+from typing import Dict, Any, List, Optional
+from models.session import PlanStep, Plan, SessionState, ToolResult
+from llm.manager import LLMProviderManager
+import logging
+
+logger = logging.getLogger(__name__)
+
+class ResponseModerator:
+    """
+    LLM-based response moderator that generates human-readable messages
+    from tool execution results.
+    """
+
+    def __init__(self, llm_manager: LLMProviderManager):
+        self.llm_manager = llm_manager
+
+    async def moderate_step_response(
+        self,
+        step: PlanStep,
+        tool_result: ToolResult,
+        user_question: str,
+        state: SessionState
+    ) -> str:
+        """
+        Generate human-readable message for a step execution result.
+
+        Args:
+            step: The executed plan step
+            tool_result: Result from tool execution
+            user_question: Original user question
+            state: Current session state
+
+        Returns:
+            Human-readable message to send to chat
+        """
+        system_prompt = """You are a helpful assistant responding to intermediate progress updates.
+Given the user's question and the result of a tool execution, generate a brief,
+conversational message explaining what was accomplished in this step.
+
+Guidelines:
+- Be concise (1-3 sentences)
+- Focus on what was discovered or accomplished
+- Use natural language, not technical jargon
+- If the step failed, explain what went wrong simply
+- Don't repeat information from previous steps
+- Don't mention internal tool names or technical details
+"""
+
+        user_message = f"""User's Question: {user_question}
+
+Tool Executed: {step.tool_name}
+Step Description: {step.description}
+
+Result:
+{self._format_tool_result(tool_result)}
+
+Generate a brief conversational message explaining this step's result."""
+
+        try:
+            llm_provider = self.llm_manager.get_provider(use_case="tool_default")
+            response = await llm_provider.generate_text(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                temperature=0.4
+            )
+            return response.strip()
+
+        except Exception as e:
+            logger.error(f"Response moderation failed: {e}")
+            # Fallback to basic message
+            if tool_result.success:
+                return f"✓ {step.description} completed."
+            else:
+                return f"✗ {step.description} failed: {tool_result.error}"
+
+    async def moderate_plan_response(
+        self,
+        plan: Plan,
+        user_question: str,
+        state: SessionState,
+        all_step_results: List[ToolResult]
+    ) -> str:
+        """
+        Generate comprehensive final response after plan completion.
+
+        This is the main answer to the user's original question, synthesizing
+        all step results into a coherent response.
+
+        Args:
+            plan: The completed execution plan
+            user_question: Original user question
+            state: Current session state with accumulated data
+            all_step_results: Results from all executed steps
+
+        Returns:
+            Comprehensive answer to user's question
+        """
+        system_prompt = """You are a helpful assistant providing final answers to user questions.
+The user asked a question, and a series of tools were executed to gather information.
+
+Your task is to:
+1. Directly answer the user's original question
+2. Synthesize information from all tool executions
+3. Provide clear, actionable insights
+4. Structure the response with proper formatting (markdown supported)
+5. If any steps failed, acknowledge limitations
+
+Guidelines:
+- Start with a direct answer to the user's question
+- Be comprehensive but concise
+- Use markdown formatting for clarity (headers, lists, code blocks)
+- Highlight important findings (CVE severity, vulnerabilities, etc.)
+- End with clear next steps or recommendations if applicable
+- Don't mention internal tool names or execution details
+"""
+
+        # Build context from all steps
+        steps_context = self._build_steps_context(plan.steps, all_step_results)
+        state_data = self._extract_relevant_state_data(state)
+
+        user_message = f"""User's Original Question: {user_question}
+
+Execution Summary:
+- Total Steps: {len(plan.steps)}
+- Successful: {sum(1 for r in all_step_results if r.success)}
+- Failed: {sum(1 for r in all_step_results if not r.success)}
+
+Step-by-Step Results:
+{steps_context}
+
+Accumulated Data from Session:
+{state_data}
+
+Generate a comprehensive final answer to the user's question."""
+
+        try:
+            llm_provider = self.llm_manager.get_provider(use_case="planner")
+            response = await llm_provider.generate_text(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                temperature=0.3,
+                max_tokens=2048
+            )
+            return response.strip()
+
+        except Exception as e:
+            logger.error(f"Plan response moderation failed: {e}")
+            # Fallback to basic summary
+            return self._generate_fallback_summary(plan, all_step_results, state)
+
+    def _format_tool_result(self, tool_result: ToolResult) -> str:
+        """Format tool result for LLM consumption."""
+        if not tool_result.success:
+            return f"Error: {tool_result.error}"
+
+        output_str = f"Success: {tool_result.summary}\n"
+
+        if tool_result.data:
+            # Format relevant data fields
+            for key, value in tool_result.data.items():
+                if isinstance(value, (str, int, float, bool)):
+                    output_str += f"- {key}: {value}\n"
+                elif isinstance(value, list) and len(value) < 10:
+                    output_str += f"- {key}: {', '.join(str(v) for v in value)}\n"
+
+        return output_str
+
+    def _build_steps_context(
+        self,
+        steps: List[PlanStep],
+        results: List[ToolResult]
+    ) -> str:
+        """Build context string from all step executions."""
+        context_parts = []
+
+        for i, (step, result) in enumerate(zip(steps, results), 1):
+            status = "✓" if result.success else "✗"
+            context_parts.append(f"{i}. {status} {step.description}")
+
+            if result.success and result.summary:
+                context_parts.append(f"   Result: {result.summary}")
+            elif not result.success:
+                context_parts.append(f"   Error: {result.error}")
+
+            # Include key data points
+            if result.data:
+                for key, value in list(result.data.items())[:3]:  # Limit to 3 items
+                    if isinstance(value, (str, int, float, bool)):
+                        context_parts.append(f"   - {key}: {value}")
+
+        return "\n".join(context_parts)
+
+    def _extract_relevant_state_data(self, state: SessionState) -> str:
+        """Extract relevant data from session state."""
+        data_parts = []
+
+        # Extract commonly used fields
+        important_fields = [
+            'cve_id', 'severity', 'affected_packages', 'repo_url',
+            'is_vulnerable', 'fix_applied', 'test_results',
+            'jira_issue_key', 'confluence_page_url'
+        ]
+
+        for field in important_fields:
+            value = getattr(state.data, field, None)
+            if value is not None:
+                data_parts.append(f"- {field}: {value}")
+
+        return "\n".join(data_parts) if data_parts else "No additional data"
+
+    def _generate_fallback_summary(
+        self,
+        plan: Plan,
+        results: List[ToolResult],
+        state: SessionState
+    ) -> str:
+        """Generate basic summary when LLM moderation fails."""
+        success_count = sum(1 for r in results if r.success)
+        fail_count = len(results) - success_count
+
+        summary = f"Execution completed: {success_count}/{len(results)} steps successful"
+
+        if fail_count > 0:
+            summary += f", {fail_count} failed"
+
+        summary += ".\n\n"
+
+        # Add key findings if available
+        if state.data.cve_id:
+            summary += f"**CVE ID:** {state.data.cve_id}\n"
+        if state.data.severity:
+            summary += f"**Severity:** {state.data.severity}\n"
+        if state.data.is_vulnerable is not None:
+            summary += f"**Repository Vulnerable:** {'Yes' if state.data.is_vulnerable else 'No'}\n"
+
+        return summary
+```
+
+**Integration with Executor:**
+
+The Executor should be modified to call ResponseModerator after each step and after plan completion:
+
+```python
+# core/orchestrator/executor.py (UPDATED)
+
+from core.orchestrator.response_moderator import ResponseModerator
+
+class Executor:
+    def __init__(
+        self,
+        tool_registry: ToolRegistry,
+        consent_manager: ConsentManager,
+        planner: Planner,
+        response_moderator: ResponseModerator  # NEW
+    ):
+        self.tool_registry = tool_registry
+        self.consent_manager = consent_manager
+        self.planner = planner
+        self.response_moderator = response_moderator  # NEW
+
+    async def _execute_step(
+        self,
+        step: PlanStep,
+        state: SessionState,
+        progress_callback: Optional[Callable] = None
+    ) -> Dict[str, Any]:
+        """Execute a single plan step."""
+        # ... existing execution logic ...
+
+        result = await self._run_tool(tool, step, state, progress_callback)
+
+        # NEW: Generate moderated response for this step
+        if result.get("success") and progress_callback:
+            moderated_message = await self.response_moderator.moderate_step_response(
+                step=step,
+                tool_result=result["tool_result"],
+                user_question=state.messages[0].content,  # Original question
+                state=state
+            )
+
+            # Send moderated message to chat
+            await progress_callback("assistant_message", {
+                "content": moderated_message,
+                "metadata": {
+                    "step_id": step.step_id,
+                    "tool_name": step.tool_name
+                }
+            })
+
+        return result
+
+    async def execute_plan(
+        self,
+        plan: Plan,
+        state: SessionState,
+        progress_callback: Optional[Callable] = None
+    ):
+        """Execute plan steps with consent, retry, and recovery logic."""
+        # ... existing execution logic ...
+
+        all_results = []
+        for group in step_groups:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            all_results.extend(results)
+
+        state.execution_status = "completed"
+
+        # NEW: Generate final moderated response after plan completion
+        if progress_callback:
+            final_response = await self.response_moderator.moderate_plan_response(
+                plan=plan,
+                user_question=state.messages[0].content,
+                state=state,
+                all_step_results=[r.get("tool_result") for r in all_results if r.get("tool_result")]
+            )
+
+            # Send final comprehensive answer to chat
+            await progress_callback("assistant_message", {
+                "content": final_response,
+                "metadata": {
+                    "final_response": True,
+                    "plan_id": plan.plan_id
+                }
+            })
 ```
 
 ---
@@ -3708,7 +4058,92 @@ Frontend:
 └── Build Tool: Vite
 ```
 
-### 7.2 TypeScript Models
+---
+
+### 7.2 Project Structure
+
+```
+frontend/
+├── public/
+│   ├── index.html
+│   └── favicon.ico
+├── src/
+│   ├── main.tsx                 # App entry point
+│   ├── App.tsx                  # Root component with routing
+│   ├── config/
+│   │   └── branding.ts          # Branding config loader
+│   ├── components/
+│   │   ├── chat/
+│   │   │   ├── ChatWindow.tsx           # Main chat container (3-panel layout)
+│   │   │   ├── ChatHeader.tsx           # Header with logo, title, status indicators
+│   │   │   ├── MessageList.tsx          # Scrollable message container
+│   │   │   ├── MessageItem.tsx          # Individual message bubble (markdown support)
+│   │   │   ├── WelcomeMessage.tsx       # Welcome banner with emoji
+│   │   │   ├── InputBar.tsx             # Message input with Send button
+│   │   │   ├── ConsentDialog.tsx        # Bottom consent approval dialog
+│   │   │   ├── FeedbackButtons.tsx      # Thumbs up/down buttons (per message)
+│   │   │   ├── AgentReasoningPanel.tsx  # Right sidebar - reasoning steps
+│   │   │   ├── ExecutionPlanPanel.tsx   # Right sidebar - plan visualization
+│   │   │   ├── PlanStepCard.tsx         # Individual step in execution plan
+│   │   │   ├── StepStatusIndicator.tsx  # Checkmark/loading/error icon
+│   │   │   ├── StepErrorActions.tsx     # Report Issue/Retry buttons
+│   │   │   └── StatusBadge.tsx          # Connected/Analyzing badge
+│   │   ├── dashboard/
+│   │   │   ├── DashboardContainer.tsx   # Main dashboard container
+│   │   │   ├── DashboardHeader.tsx      # Header with user info
+│   │   │   ├── TimeFilterButtons.tsx    # Last 7/30 Days, All Time
+│   │   │   ├── AnalyticsCards.tsx       # 4 metric cards container
+│   │   │   ├── MetricCard.tsx           # Individual metric card
+│   │   │   ├── SessionsTable.tsx        # Recent sessions table
+│   │   │   ├── SessionRow.tsx           # Individual session row
+│   │   │   ├── ToolPerformanceChart.tsx # Horizontal bar chart (success rate)
+│   │   │   ├── FeedbackChart.tsx        # Feedback distribution chart
+│   │   │   └── StarRating.tsx           # Star rating display component
+│   │   ├── common/
+│   │   │   ├── ErrorBoundary.tsx
+│   │   │   ├── LoadingSpinner.tsx
+│   │   │   ├── UserAvatar.tsx           # User avatar with initials
+│   │   │   ├── ProgressIndicator.tsx    # Step progress (4/6 - 1 failed)
+│   │   │   └── RiskBadge.tsx            # MEDIUM/HIGH/LOW RISK badge
+│   │   └── layout/
+│   │       ├── MainLayout.tsx
+│   │       └── ThreePanelLayout.tsx     # Chat 3-panel layout wrapper
+│   ├── hooks/
+│   │   ├── useWebSocket.ts      # WebSocket connection hook
+│   │   ├── useSession.ts        # Session state management
+│   │   ├── useDashboard.ts      # Dashboard data fetching
+│   │   └── useBranding.ts       # Branding config hook
+│   ├── types/
+│   │   ├── session.ts           # Session-related types
+│   │   ├── message.ts           # Message types
+│   │   ├── plan.ts              # Plan & PlanStep types
+│   │   ├── tool.ts              # Tool types
+│   │   └── branding.ts          # Branding config types
+│   ├── services/
+│   │   ├── websocket.ts         # WebSocket service
+│   │   ├── api.ts               # REST API client
+│   │   └── storage.ts           # LocalStorage utilities
+│   ├── context/
+│   │   ├── SessionContext.tsx   # Session state context
+│   │   └── BrandingContext.tsx  # Branding context
+│   ├── pages/
+│   │   ├── ChatPage.tsx         # Chat interface page
+│   │   └── DashboardPage.tsx    # Dashboard page
+│   ├── utils/
+│   │   ├── formatters.ts        # Date/time formatters
+│   │   └── validators.ts        # Input validators
+│   └── styles/
+│       └── globals.css          # Global styles
+├── branding_config.yaml         # White-label configuration
+├── package.json
+├── tsconfig.json
+├── vite.config.ts
+└── tailwind.config.js
+```
+
+---
+
+### 7.3 TypeScript Models
 
 ```typescript
 // frontend/src/types/session.ts
@@ -3805,7 +4240,225 @@ export interface StepCompletedPayload {
 }
 ```
 
-### 7.3 WebSocket Hook
+---
+
+### 7.4 UI Layout & Component Specifications
+
+Based on the design mockups (chatpanel.png and dashboard.png), here are the detailed UI specifications:
+
+#### 7.4.1 Chat Page Layout (Three-Panel Design)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  [Red Hat Logo]  OCP Sustaining Bot          🔄 Analyzing... (46s)  🟢 Connected│
+│                  Agentic Team Bot                                               │
+├────────────────────────────────────┬────────────────────────────────────────────┤
+│                                    │  🤖 Agent Reasoning                   ▼    │
+│  👋 Welcome! I can help you...     │  ✓ Extracted CVE ID and repository info    │
+│                                    │  ✓ Fetched CVE details from OSV database   │
+│ ┌────────────────────────────────┐ │  ✓ Cloned repository and analyzed go.mod  │
+│ │ [User Prompt Bubble]           │ │  🔴 Checking if affected packages are...  │
+│ │ Analyze CVE-2024-24786 for...│ │                                            │
+│ └────────────────────────────────┘ │ ─────────────────────────────────────────  │
+│                                    │  📋 Execution Plan            4/6 - 1 failed│
+│ 👤 10:23:45                        │                                       ▼    │
+│ I'll analyze this CVE for you...  │  ┌──────────────────────────────────────┐  │
+│                                    │  │ ✓ Fetch CVE Data                    │  │
+│ 🤖 10:23:52                        │  │   Retrieved vulnerability details    │  │
+│ I've retrieved CVE-2024-24786.    │  └──────────────────────────────────────┘  │
+│ It's a HIGH severity issue        │  ┌──────────────────────────────────────┐  │
+│ (CVSS 7.5) affecting protobuf...  │  │ ✓ Clone Repository                  │  │
+│                       👍  👎      │  │   Cloned openshift/cluster-nfd-op... │  │
+│                                    │  └──────────────────────────────────────┘  │
+│ 🤖 10:24:01                        │  ┌──────────────────────────────────────┐  │
+│ I've cloned your repository and   │  │ ✓ Assess CVE Impact                 │  │
+│ analyzed the go.mod file...       │  │   Analyzed if vulnerable packages... │  │
+│                       👍  👎      │  └──────────────────────────────────────┘  │
+│                                    │  ┌──────────────────────────────────────┐  │
+│ 🤖 Applying fix to go.mod...       │  │ ⟳ Apply Fix                        │  │
+│    ⟳ [Spinner]                    │  │   Updating dependencies...          │  │
+│                                    │  └──────────────────────────────────────┘  │
+│                                    │  ┌──────────────────────────────────────┐  │
+│                                    │  │ ✗ Test Fix                          │  │
+│                                    │  │   Run build and tests to validate   │  │
+│ ┌────────────────────────────────┐ │  │   ⚠️ Build failed: undefined ref... │  │
+│ │ Type your request here... 📤Send│ │  │        🔴 Report Issue  🔁 Retry   │  │
+│ └────────────────────────────────┘ │  └──────────────────────────────────────┘  │
+├────────────────────────────────────┤  ┌──────────────────────────────────────┐  │
+│ ⚠️ Approve "Apply Fix" to go.mod? │  │ ○ Create PR                         │  │
+│ This will update google.golang...  │  │   Generate pull request with fix    │  │
+│ [Reject] [Approve All] [Approve]   │  └──────────────────────────────────────┘  │
+│ MEDIUM RISK                        │                                            │
+└────────────────────────────────────┴────────────────────────────────────────────┘
+```
+
+**Layout Proportions:**
+- Left panel (main chat): ~65% width
+- Right panel (reasoning + plan): ~35% width
+- Header: Fixed height ~60px
+- Consent dialog: Fixed bottom position when active
+
+**Key Components:**
+
+1. **ChatHeader:**
+   - Logo + title (left)
+   - Status indicators: "Analyzing... (46s)", "Connected" (right)
+   - Background: white with subtle border
+
+2. **MessageList:**
+   - Alternating user/bot messages
+   - User messages: Pink/red bubbles, right-aligned
+   - Bot messages: White/gray bubbles, left-aligned with markdown rendering
+   - Timestamps with avatar icons
+   - **Spinner/Loading Indicator:** During step execution
+     - Shows blue bubble with spinning icon and step description
+     - Example: "🤖 Fetching CVE vulnerability data... ⟳"
+     - Automatically replaced by moderated message when step completes
+   - **Important:** Bot responses are LLM-moderated messages from ResponseModerator
+     - After each step: Brief progress update (e.g., "I've fetched the CVE details...")
+     - After plan completion: Comprehensive answer to user's question
+   - Feedback buttons (thumbs up/down) shown per assistant message
+
+3. **ConsentDialog:**
+   - Fixed bottom position, full width
+   - Yellow/warning background
+   - Risk level badge (MEDIUM/HIGH/LOW RISK)
+   - Three action buttons: Reject, Approve All, Approve
+   - Shows what will be modified
+
+4. **AgentReasoningPanel:**
+   - Collapsible section with robot emoji
+   - Live-updating reasoning steps
+   - Green checkmarks for completed steps
+   - Red dot with loading animation for current step
+
+5. **ExecutionPlanPanel:**
+   - Collapsible section with document emoji
+   - Progress indicator: "4/6 - 1 failed"
+   - Color-coded step cards:
+     - Green border + checkmark: completed
+     - Red border + X: failed
+     - Gray + empty circle: pending
+   - Failed steps show error message + action buttons
+   - Each step shows description/subtitle
+
+**Response Flow Architecture:**
+
+The chat panel displays **LLM-moderated responses** rather than raw tool outputs. This provides:
+
+1. **Step-Level Updates** (during execution):
+   - After each tool executes, ResponseModerator calls LLM to generate a brief, conversational update
+   - Example: After `cve_go_fetch_vulnerability_data` executes → "I've retrieved CVE-2024-24786. It's a HIGH severity issue..."
+   - These updates keep the user informed of progress in natural language
+   - Each update gets its own message bubble with feedback buttons
+
+2. **Plan-Level Final Response** (after all steps complete):
+   - ResponseModerator takes all step results + original user question
+   - Calls LLM to synthesize a comprehensive, well-formatted answer
+   - Response directly addresses the user's original question
+   - Uses markdown formatting for clarity (headers, lists, code blocks, etc.)
+   - Example structure:
+     ```markdown
+     ## CVE Analysis Complete
+
+     I've analyzed CVE-2024-24786...
+
+     ### Vulnerability Summary
+     - **CVE ID:** CVE-2024-24786
+     - **Severity:** HIGH (CVSS 7.5)
+
+     ### Repository Status
+     ✅ The repository IS vulnerable
+
+     ### Next Steps
+     ...
+     ```
+
+**Benefits:**
+- Generic frontend components (not task-specific like CVEResultsCard)
+- Better UX with context-aware, conversational responses
+- LLM handles formatting, emphasis, and tone
+- Same architecture works for CVE analysis, Jira queries, documentation, etc.
+- Clean separation: Executor handles orchestration, ResponseModerator handles presentation
+
+---
+
+#### 7.4.2 Dashboard Page Layout
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  OCP Sustaining Bot                         [AD] Admin User  🟢 Connected       │
+│  Dashboard                                      Admin                           │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  Session History & Analytics          [Last 7 Days] [Last 30 Days] [All Time] │
+│                                                                                 │
+│  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐      │
+│  │Total Sessions │ │ Success Rate  │ │  Avg Rating   │ │ Avg Duration  │      │
+│  │     147       │ │     89%       │ │   ⭐ 4.2      │ │   2m 34s      │      │
+│  │ ↑ 12% from... │ │ ↑ 3% from...  │ │ Based on 98.. │ │ ↓ 15s from... │      │
+│  └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘      │
+│                                                                                 │
+│  Recent Sessions                                                                │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │ TIME         REQUEST                           STATUS   RATING  DURATION │   │
+│  ├─────────────────────────────────────────────────────────────────────────┤   │
+│  │ 2 hours ago  Analyze CVE-2024-24786 for...  ✓ Completed ⭐⭐⭐⭐⭐ 1m 42s  5│   │
+│  │ 3 hours ago  Check CVE-2024-1234 for...     ✗ Failed    ⭐⭐⭐⭐⭐ 0m 58s  3│   │
+│  │ 5 hours ago  Remediate golang.org/x/net...  ✓ Completed ⭐⭐⭐⭐⭐ 3m 12s  6│   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  ┌─────────────────────────────────────┐ ┌─────────────────────────────────┐  │
+│  │ Tool Performance (Success Rate)     │ │ Feedback Distribution           │  │
+│  │                                     │ │                                 │  │
+│  │ fetch_cve_data    ████████████ 95% │ │ ⭐⭐⭐⭐⭐  ██████████████  45%   │  │
+│  │ clone_repository  ███████████  92% │ │ ⭐⭐⭐⭐    ████████       28%   │  │
+│  │ assess_cve        ██████████   88% │ │ ⭐⭐⭐      ████          18%   │  │
+│  │ apply_fix         █████████    82% │ │ ⭐⭐        ██            9%   │  │
+│  └─────────────────────────────────────┘ └─────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key Components:**
+
+1. **DashboardHeader:**
+   - Title + subtitle (left)
+   - User avatar with initials, name, role, connection status (right)
+
+2. **TimeFilterButtons:**
+   - Three buttons: "Last 7 Days", "Last 30 Days", "All Time"
+   - Active button: Red/primary color
+   - Inactive: Gray outline
+
+3. **AnalyticsCards (4 cards):**
+   - Total Sessions: Large number with trend arrow
+   - Success Rate: Percentage with green trend
+   - Avg Rating: Star icon with number
+   - Avg Duration: Time with trend arrow
+   - Each card shows comparison text: "↑ 12% from last week"
+
+4. **SessionsTable:**
+   - Headers: TIME | REQUEST | STATUS | RATING | DURATION | TOOLS USED
+   - Status column: Green "✓ Completed" or Red "✗ Failed"
+   - Rating: 5-star display (filled stars)
+   - Truncated request text with ellipsis
+   - Alternating row backgrounds for readability
+
+5. **ToolPerformanceChart:**
+   - Horizontal bar chart
+   - Tool name (left), bar (middle), percentage (right)
+   - Green bars with varying lengths
+   - Shows success rate per tool
+
+6. **FeedbackChart:**
+   - Horizontal bar chart
+   - Star rating (left), bar (middle), percentage (right)
+   - Orange/yellow bars
+   - Distribution of 5-star to 1-star ratings
+
+---
+
+### 7.5 WebSocket Hook
 
 ```typescript
 // frontend/src/hooks/useWebSocket.ts
@@ -3864,6 +4517,584 @@ export const useWebSocket = (
   };
 
   return { isConnected, sendMessage };
+};
+```
+
+---
+
+### 7.6 Key Component Implementations
+
+#### 7.6.1 Chat Window with Three-Panel Layout
+
+```typescript
+// frontend/src/components/chat/ChatWindow.tsx
+
+import React from 'react';
+import ChatHeader from './ChatHeader';
+import MessageList from './MessageList';
+import InputBar from './InputBar';
+import ConsentDialog from './ConsentDialog';
+import AgentReasoningPanel from './AgentReasoningPanel';
+import ExecutionPlanPanel from './ExecutionPlanPanel';
+import { useSession } from '../../hooks/useSession';
+
+export const ChatWindow: React.FC = () => {
+  const { session, messages, plan, pendingConsent, executingStep } = useSession();
+
+  return (
+    <div className="flex flex-col h-screen">
+      <ChatHeader
+        status={session.status}
+        analyzing={session.current_step !== null}
+      />
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* Main Chat Area - 65% */}
+        <div className="flex-1 flex flex-col w-2/3 border-r">
+          <MessageList
+            messages={messages}
+            executingStep={executingStep}
+          />
+          <InputBar disabled={!!pendingConsent} />
+          {pendingConsent && (
+            <ConsentDialog consent={pendingConsent} />
+          )}
+        </div>
+
+        {/* Right Sidebar - 35% */}
+        <div className="w-1/3 flex flex-col overflow-y-auto bg-gray-50 p-4 space-y-4">
+          <AgentReasoningPanel
+            thinkingSteps={session.thinking_steps}
+          />
+          <ExecutionPlanPanel
+            plan={plan}
+            currentStep={session.current_step}
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
+```
+
+#### 7.6.2 Message Item with Markdown Support
+
+**Note:** All assistant messages are LLM-moderated responses from the backend's ResponseModerator.
+The ResponseModerator converts raw tool results into human-readable messages with proper formatting.
+
+```typescript
+// frontend/src/components/chat/MessageItem.tsx
+
+import React from 'react';
+import ReactMarkdown from 'react-markdown';
+import FeedbackButtons from './FeedbackButtons';
+import { Message } from '../../types/message';
+
+interface MessageItemProps {
+  message: Message;
+}
+
+export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
+  const isUser = message.role === 'user';
+  const isAssistant = message.role === 'assistant';
+
+  return (
+    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
+      <div className={`max-w-3xl ${isUser ? 'bg-red-500 text-white' : 'bg-white'} rounded-lg shadow-md p-4`}>
+        {/* Avatar and timestamp */}
+        <div className="flex items-center mb-2">
+          <span className="text-sm opacity-75">
+            {isUser ? '👤' : '🤖'} {new Date(message.timestamp).toLocaleTimeString()}
+          </span>
+        </div>
+
+        {/* Message content with markdown support */}
+        <div className="prose prose-sm max-w-none">
+          {isAssistant ? (
+            <ReactMarkdown
+              components={{
+                // Custom rendering for code blocks
+                code: ({ inline, children, ...props }) => (
+                  inline
+                    ? <code className="bg-gray-100 px-1 rounded text-xs" {...props}>{children}</code>
+                    : <pre className="bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto"><code {...props}>{children}</code></pre>
+                ),
+                // Custom rendering for lists
+                ul: ({ children }) => <ul className="list-disc pl-5 space-y-1">{children}</ul>,
+                ol: ({ children }) => <ol className="list-decimal pl-5 space-y-1">{children}</ol>,
+                // Custom rendering for headings
+                h1: ({ children }) => <h1 className="text-xl font-bold mt-3 mb-2">{children}</h1>,
+                h2: ({ children }) => <h2 className="text-lg font-semibold mt-2 mb-1">{children}</h2>,
+                h3: ({ children }) => <h3 className="text-md font-medium mt-2 mb-1">{children}</h3>,
+              }}
+            >
+              {message.content}
+            </ReactMarkdown>
+          ) : (
+            <p>{message.content}</p>
+          )}
+        </div>
+
+        {/* Feedback buttons for assistant messages */}
+        {isAssistant && (
+          <FeedbackButtons messageId={message.message_id} />
+        )}
+      </div>
+    </div>
+  );
+};
+```
+
+**Example moderated responses from ResponseModerator:**
+
+1. **Step-level response** (after CVE fetch step):
+```markdown
+I've retrieved the vulnerability details for CVE-2024-24786. It's a **HIGH severity** issue
+(CVSS 7.5) affecting `google.golang.org/protobuf` before version v1.33.0. The vulnerability
+involves infinite recursion in the unmarshal function.
+```
+
+2. **Plan-level final response** (after full CVE analysis):
+```markdown
+## CVE Analysis Complete
+
+I've analyzed CVE-2024-24786 for your repository `openshift/cluster-nfd-operator` on branch
+`release-4.15`.
+
+### Vulnerability Summary
+- **CVE ID:** CVE-2024-24786
+- **Severity:** HIGH (CVSS 7.5)
+- **Affected Package:** google.golang.org/protobuf
+- **Current Version:** v1.31.0 ⚠️
+- **Fixed Version:** v1.33.0
+
+### Repository Status
+✅ **The repository IS vulnerable** - the affected package is actively used in your codebase.
+
+### Remediation Applied
+I've updated your `go.mod` file to use the patched version `v1.33.0`. However, the build tests
+failed due to an undefined reference in `proto.Marshal`.
+
+### Next Steps
+1. **Review the build error** - There may be a breaking change in the protobuf upgrade
+2. **Choose an action:**
+   - Click "Retry" to attempt the build again
+   - Click "Report Issue" to create a detailed issue report
+   - I can create a pull request with the current fix for manual review
+
+Would you like me to proceed with creating a PR?
+```
+
+---
+
+#### 7.6.3 Thinking Indicator (Step Execution Spinner)
+
+Shows a loading spinner when a step is currently executing, before the moderated response appears.
+
+```typescript
+// frontend/src/components/chat/ThinkingIndicator.tsx
+
+import React from 'react';
+
+interface ThinkingIndicatorProps {
+  stepDescription: string;
+  toolName?: string;
+}
+
+export const ThinkingIndicator: React.FC<ThinkingIndicatorProps> = ({
+  stepDescription,
+  toolName
+}) => {
+  return (
+    <div className="flex justify-start mb-4">
+      <div className="max-w-3xl bg-blue-50 rounded-lg shadow-md p-4 border border-blue-200">
+        <div className="flex items-center space-x-3">
+          {/* Spinning loader icon */}
+          <div className="flex-shrink-0">
+            <svg
+              className="animate-spin h-5 w-5 text-blue-600"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
+            </svg>
+          </div>
+
+          {/* Step description */}
+          <div className="flex-1">
+            <div className="flex items-center">
+              <span className="text-sm text-blue-800 font-medium">
+                🤖 {stepDescription}
+              </span>
+            </div>
+            {toolName && (
+              <div className="text-xs text-blue-600 mt-1">
+                Executing: {toolName}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+```
+
+---
+
+#### 7.6.4 Message List with Spinner
+
+Shows messages and displays a thinking indicator when a step is executing.
+
+```typescript
+// frontend/src/components/chat/MessageList.tsx
+
+import React, { useEffect, useRef } from 'react';
+import MessageItem from './MessageItem';
+import ThinkingIndicator from './ThinkingIndicator';
+import WelcomeMessage from './WelcomeMessage';
+import { Message } from '../../types/message';
+
+interface ExecutingStepInfo {
+  step_id: string;
+  description: string;
+  tool_name: string;
+}
+
+interface MessageListProps {
+  messages: Message[];
+  executingStep?: ExecutingStepInfo | null;
+}
+
+export const MessageList: React.FC<MessageListProps> = ({
+  messages,
+  executingStep
+}) => {
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, executingStep]);
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4 bg-gray-50">
+      {/* Show welcome message if no messages yet */}
+      {messages.length === 0 && <WelcomeMessage />}
+
+      {/* Render all messages */}
+      {messages.map((message) => (
+        <MessageItem key={message.message_id} message={message} />
+      ))}
+
+      {/* Show thinking indicator if step is executing */}
+      {executingStep && (
+        <ThinkingIndicator
+          stepDescription={executingStep.description}
+          toolName={executingStep.tool_name}
+        />
+      )}
+
+      {/* Scroll anchor */}
+      <div ref={messagesEndRef} />
+    </div>
+  );
+};
+```
+
+**How it works:**
+
+1. **Step starts executing:**
+   - Backend sends `step_started` WebSocket message
+   - Frontend stores executingStep in session state
+   - ThinkingIndicator appears with spinner and step description
+
+2. **Step completes:**
+   - Backend sends moderated response via `assistant_message` WebSocket message
+   - Frontend clears executingStep and adds message to messages array
+   - ThinkingIndicator is replaced by the MessageItem with the response
+
+3. **Visual flow:**
+   ```
+   User: "Analyze CVE-2024-24786..."
+
+   [Spinner] 🤖 Fetching CVE vulnerability data...
+            Executing: cve_go_fetch_vulnerability_data
+
+   → (After step completes, spinner is replaced with:)
+
+   🤖 I've retrieved CVE-2024-24786. It's a HIGH severity issue...
+      [👍] [👎]
+   ```
+
+---
+
+#### 7.6.5 Execution Plan Panel with Step Cards
+
+```typescript
+// frontend/src/components/chat/ExecutionPlanPanel.tsx
+
+import React, { useState } from 'react';
+import PlanStepCard from './PlanStepCard';
+import { Plan } from '../../types/plan';
+
+interface ExecutionPlanPanelProps {
+  plan: Plan | null;
+  currentStep: number | null;
+}
+
+export const ExecutionPlanPanel: React.FC<ExecutionPlanPanelProps> = ({
+  plan, currentStep
+}) => {
+  const [collapsed, setCollapsed] = useState(false);
+
+  if (!plan) return null;
+
+  const completedSteps = plan.steps.filter(s => s.status === 'completed').length;
+  const failedSteps = plan.steps.filter(s => s.status === 'failed').length;
+
+  return (
+    <div className="bg-white rounded-lg shadow-sm">
+      <div
+        className="flex items-center justify-between p-3 cursor-pointer border-b"
+        onClick={() => setCollapsed(!collapsed)}
+      >
+        <div className="flex items-center">
+          <span className="mr-2">📋</span>
+          <h3 className="font-semibold text-gray-800">Execution Plan</h3>
+        </div>
+        <div className="flex items-center space-x-2">
+          <span className="text-sm text-gray-600">
+            {completedSteps}/{plan.steps.length}
+            {failedSteps > 0 && ` - ${failedSteps} failed`}
+          </span>
+          <span className="text-gray-400">{collapsed ? '▼' : '▲'}</span>
+        </div>
+      </div>
+
+      {!collapsed && (
+        <div className="p-3 space-y-3">
+          {plan.steps.map((step, index) => (
+            <PlanStepCard
+              key={step.step_id}
+              step={step}
+              isActive={currentStep === index}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+```
+
+#### 7.6.6 Plan Step Card with Status
+
+```typescript
+// frontend/src/components/chat/PlanStepCard.tsx
+
+import React from 'react';
+import StepStatusIndicator from './StepStatusIndicator';
+import StepErrorActions from './StepErrorActions';
+import { PlanStep } from '../../types/plan';
+
+interface PlanStepCardProps {
+  step: PlanStep;
+  isActive: boolean;
+}
+
+export const PlanStepCard: React.FC<PlanStepCardProps> = ({ step, isActive }) => {
+  const borderColors = {
+    completed: 'border-l-4 border-green-500 bg-green-50',
+    failed: 'border-l-4 border-red-500 bg-red-50',
+    in_progress: 'border-l-4 border-blue-500 bg-blue-50',
+    pending: 'border-l-4 border-gray-300 bg-gray-50',
+  };
+
+  return (
+    <div className={`rounded-r-lg p-3 ${borderColors[step.status]}`}>
+      <div className="flex items-start">
+        <StepStatusIndicator status={step.status} isActive={isActive} />
+        <div className="ml-3 flex-1">
+          <h4 className="font-medium text-sm text-gray-800">{step.description}</h4>
+          {step.result && (
+            <p className="text-xs text-gray-600 mt-1">{step.result.summary}</p>
+          )}
+
+          {step.status === 'failed' && step.result?.error && (
+            <div className="mt-2">
+              <div className="flex items-center text-xs text-red-600">
+                <span className="mr-1">⚠️</span>
+                <span>{step.result.error}</span>
+              </div>
+              <StepErrorActions stepId={step.step_id} />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+```
+
+#### 7.6.7 Consent Dialog
+
+```typescript
+// frontend/src/components/chat/ConsentDialog.tsx
+
+import React from 'react';
+import RiskBadge from '../common/RiskBadge';
+import { ConsentRequest } from '../../types/session';
+import { useSession } from '../../hooks/useSession';
+
+interface ConsentDialogProps {
+  consent: ConsentRequest;
+}
+
+export const ConsentDialog: React.FC<ConsentDialogProps> = ({ consent }) => {
+  const { respondToConsent } = useSession();
+
+  return (
+    <div className="border-t border-gray-300 bg-yellow-50 p-4">
+      <div className="flex items-center justify-between">
+        <div className="flex-1">
+          <div className="flex items-center mb-1">
+            <span className="mr-2">⚠️</span>
+            <h3 className="font-semibold text-gray-800">
+              Approve "{consent.action}" to {consent.target}?
+            </h3>
+          </div>
+          <p className="text-sm text-gray-600 ml-6">
+            {consent.description}
+          </p>
+        </div>
+
+        <div className="flex items-center space-x-2 ml-4">
+          <RiskBadge level={consent.risk_level} />
+          <button
+            onClick={() => respondToConsent('reject')}
+            className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Reject
+          </button>
+          <button
+            onClick={() => respondToConsent('approve_all')}
+            className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Approve All
+          </button>
+          <button
+            onClick={() => respondToConsent('approve')}
+            className="px-4 py-2 bg-green-600 text-white rounded-md text-sm font-medium hover:bg-green-700"
+          >
+            Approve
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+```
+
+#### 7.6.8 Dashboard Analytics Cards
+
+```typescript
+// frontend/src/components/dashboard/AnalyticsCards.tsx
+
+import React from 'react';
+import MetricCard from './MetricCard';
+import { DashboardMetrics } from '../../types/dashboard';
+
+interface AnalyticsCardsProps {
+  metrics: DashboardMetrics;
+}
+
+export const AnalyticsCards: React.FC<AnalyticsCardsProps> = ({ metrics }) => {
+  return (
+    <div className="grid grid-cols-4 gap-4 mb-6">
+      <MetricCard
+        title="Total Sessions"
+        value={metrics.total_sessions}
+        trend={metrics.session_trend}
+        trendLabel={`${Math.abs(metrics.session_trend)}% from last week`}
+      />
+      <MetricCard
+        title="Success Rate"
+        value={`${metrics.success_rate}%`}
+        trend={metrics.success_rate_trend}
+        trendLabel={`${Math.abs(metrics.success_rate_trend)}% from last week`}
+        valueColor="text-green-600"
+      />
+      <MetricCard
+        title="Avg Rating"
+        value={metrics.avg_rating}
+        icon="⭐"
+        subtitle={`Based on ${metrics.total_ratings} ratings`}
+      />
+      <MetricCard
+        title="Avg Duration"
+        value={metrics.avg_duration}
+        trend={-metrics.duration_trend}  // Negative is good for duration
+        trendLabel={`${metrics.duration_trend}s from last week`}
+      />
+    </div>
+  );
+};
+```
+
+#### 7.6.9 Sessions Table
+
+```typescript
+// frontend/src/components/dashboard/SessionsTable.tsx
+
+import React from 'react';
+import SessionRow from './SessionRow';
+import StarRating from './StarRating';
+import { Session } from '../../types/session';
+
+interface SessionsTableProps {
+  sessions: Session[];
+}
+
+export const SessionsTable: React.FC<SessionsTableProps> = ({ sessions }) => {
+  return (
+    <div className="bg-white rounded-lg shadow-sm overflow-hidden mb-6">
+      <div className="px-6 py-4 border-b">
+        <h3 className="font-semibold text-gray-800">Recent Sessions</h3>
+      </div>
+
+      <table className="w-full">
+        <thead className="bg-gray-50 text-xs font-medium text-gray-500 uppercase">
+          <tr>
+            <th className="px-6 py-3 text-left">Time</th>
+            <th className="px-6 py-3 text-left">Request</th>
+            <th className="px-6 py-3 text-left">Status</th>
+            <th className="px-6 py-3 text-left">Rating</th>
+            <th className="px-6 py-3 text-left">Duration</th>
+            <th className="px-6 py-3 text-left">Tools Used</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-200">
+          {sessions.map(session => (
+            <SessionRow key={session.session_id} session={session} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 };
 ```
 
@@ -4436,6 +5667,165 @@ system_config:
     postgres_password: ${DB_PASSWORD}
     pool_size: 5
     max_overflow: 10
+```
+
+---
+
+### 8.4 Branding Configuration
+
+```yaml
+# frontend/branding_config.yaml
+
+branding:
+  # Application Branding
+  app_name: "OCP Sustaining Bot"
+  app_tagline: "AI-Powered Automation for Sustaining Engineering"
+  company_name: "Red Hat"
+
+  # Logo & Favicon
+  logo_url: "/assets/logo.png"
+  logo_dark_url: "/assets/logo-dark.png"  # For dark mode
+  favicon_url: "/assets/favicon.ico"
+
+  # Colors (Tailwind CSS compatible)
+  theme:
+    primary_color: "#0066CC"      # Primary brand color
+    secondary_color: "#EE0000"    # Secondary accent color
+    success_color: "#3E8635"
+    warning_color: "#F0AB00"
+    error_color: "#C9190B"
+
+  # UI Customization
+  ui:
+    show_company_logo: true
+    show_powered_by: false        # Hide "Powered by..." text
+    enable_dark_mode: true
+    default_theme: "light"        # light | dark | auto
+
+  # Chat Interface
+  chat:
+    bot_avatar_url: "/assets/bot-avatar.png"
+    bot_name: "OCP Assistant"
+    welcome_message: |
+      Hello! I'm your OCP Sustaining Assistant. I can help you with:
+      - CVE analysis and remediation for Go projects
+      - Documentation lookup from Confluence
+      - Jira issue management
+      - Test failure analysis
+
+      How can I assist you today?
+
+    placeholder_text: "Type your message here..."
+    enable_markdown: true
+    enable_code_highlighting: true
+
+  # Dashboard
+  dashboard:
+    show_analytics: true
+    show_session_history: true
+    max_sessions_display: 50
+
+  # Footer
+  footer:
+    show_footer: true
+    copyright_text: "© 2026 Red Hat, Inc."
+    links:
+      - label: "Documentation"
+        url: "https://docs.example.com"
+      - label: "Support"
+        url: "https://support.example.com"
+      - label: "Privacy Policy"
+        url: "https://privacy.example.com"
+
+  # Contact & Support
+  support:
+    show_support_button: true
+    support_email: "support@example.com"
+    support_url: "https://support.example.com"
+```
+
+**TypeScript Interface:**
+
+```typescript
+// frontend/src/types/branding.ts
+
+export interface BrandingConfig {
+  app_name: string;
+  app_tagline: string;
+  company_name: string;
+
+  logo_url: string;
+  logo_dark_url?: string;
+  favicon_url: string;
+
+  theme: {
+    primary_color: string;
+    secondary_color: string;
+    success_color: string;
+    warning_color: string;
+    error_color: string;
+  };
+
+  ui: {
+    show_company_logo: boolean;
+    show_powered_by: boolean;
+    enable_dark_mode: boolean;
+    default_theme: "light" | "dark" | "auto";
+  };
+
+  chat: {
+    bot_avatar_url: string;
+    bot_name: string;
+    welcome_message: string;
+    placeholder_text: string;
+    enable_markdown: boolean;
+    enable_code_highlighting: boolean;
+  };
+
+  dashboard: {
+    show_analytics: boolean;
+    show_session_history: boolean;
+    max_sessions_display: number;
+  };
+
+  footer: {
+    show_footer: boolean;
+    copyright_text: string;
+    links: Array<{
+      label: string;
+      url: string;
+    }>;
+  };
+
+  support: {
+    show_support_button: boolean;
+    support_email: string;
+    support_url: string;
+  };
+}
+```
+
+**Loading Branding Config:**
+
+```typescript
+// frontend/src/config/branding.ts
+
+import brandingConfigYaml from '../../branding_config.yaml';
+
+export const loadBrandingConfig = (): BrandingConfig => {
+  // Load from YAML file or fetch from API
+  return brandingConfigYaml.branding;
+};
+
+// Apply theme colors to CSS variables
+export const applyTheme = (config: BrandingConfig) => {
+  const root = document.documentElement;
+  root.style.setProperty('--color-primary', config.theme.primary_color);
+  root.style.setProperty('--color-secondary', config.theme.secondary_color);
+  root.style.setProperty('--color-success', config.theme.success_color);
+  root.style.setProperty('--color-warning', config.theme.warning_color);
+  root.style.setProperty('--color-error', config.theme.error_color);
+};
 ```
 
 ---
