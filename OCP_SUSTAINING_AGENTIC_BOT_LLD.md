@@ -36,7 +36,7 @@ Backend:
 ├── Validation: Pydantic v2
 ├── Database ORM: SQLAlchemy 2.0+
 ├── Database Driver: asyncpg (PostgreSQL), aiosqlite (SQLite)
-├── LLM SDK: Configurable (OpenAI SDK, Google GenAI SDK, Anthropic SDK)
+├── LLM SDK: Google GenAI SDK (Gemini), Ollama API (local models)
 └── MCP SDK: Model Context Protocol Python SDK
 ```
 
@@ -87,9 +87,8 @@ backend/
 │       └── ...
 ├── llm/
 │   ├── provider.py              # LLM provider abstraction
-│   ├── openai_provider.py
 │   ├── gemini_provider.py
-│   └── anthropic_provider.py
+│   └── ollama_provider.py
 ├── db/
 │   ├── database.py              # Database connection
 │   ├── repository.py            # Database operations
@@ -846,7 +845,7 @@ Please create an execution plan."""
     def _get_tools_schema(self, tools: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Convert tools to JSON schema for LLM function calling."""
         # Implementation depends on LLM provider
-        # Returns OpenAI-compatible function schema
+        # Returns standard function calling schema (compatible with Gemini function calling)
         pass
 
     def _parse_llm_response(
@@ -1985,12 +1984,12 @@ class Tool(ABC):
         Preferred LLM provider for this tool.
 
         Returns:
-            LLM provider name from llm_config.yaml (e.g., "gemini_flash", "openai_gpt4o")
+            LLM provider name from llm_config.yaml (e.g., "gemini_flash", "gemini_pro")
             None means use default tool LLM
 
         Examples:
             - Simple extraction tasks: "gemini_flash" or "ollama_llama3"
-            - Complex analysis: "gemini_pro" or "openai_gpt4o"
+            - Complex analysis: "gemini_pro"
             - Code-focused tasks: "ollama_codellama"
         """
         return None  # Default: use system default
@@ -3420,125 +3419,7 @@ Create a step-by-step execution plan."""
 
 ---
 
-### 6.5.3 OpenAI Provider Implementation
-
-```python
-# llm/openai_provider.py
-
-from llm.provider import LLMProvider
-from typing import Dict, Any, Optional, AsyncIterator
-from pydantic import BaseModel
-from openai import AsyncOpenAI
-import json
-import logging
-
-logger = logging.getLogger(__name__)
-
-class OpenAIProvider(LLMProvider):
-    """OpenAI GPT LLM provider."""
-
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__(config)
-
-        self.client = AsyncOpenAI(
-            api_key=config.get("api_key"),
-            base_url=config.get("base_url"),
-            timeout=self.timeout_seconds
-        )
-
-    async def generate_text(
-        self,
-        system_prompt: str,
-        user_message: str,
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None
-    ) -> str:
-        """Generate text using OpenAI."""
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=temperature or self.temperature,
-                max_tokens=max_tokens or self.max_tokens
-            )
-
-            return response.choices[0].message.content
-
-        except Exception as e:
-            logger.error(f"OpenAI generation failed: {e}")
-            raise
-
-    async def generate_structured_output(
-        self,
-        system_prompt: str,
-        user_message: str,
-        output_schema: type[BaseModel],
-        temperature: Optional[float] = None
-    ) -> Dict[str, Any]:
-        """Generate structured JSON output using OpenAI's response_format."""
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=temperature or self.temperature,
-                response_format={"type": "json_object"},
-                max_tokens=self.max_tokens
-            )
-
-            return json.loads(response.choices[0].message.content)
-
-        except Exception as e:
-            logger.error(f"OpenAI structured output failed: {e}")
-            raise
-
-    async def generate_with_streaming(
-        self,
-        system_prompt: str,
-        user_message: str,
-        temperature: Optional[float] = None
-    ) -> AsyncIterator[str]:
-        """Stream text generation."""
-        try:
-            stream = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=temperature or self.temperature,
-                stream=True
-            )
-
-            async for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-
-        except Exception as e:
-            logger.error(f"OpenAI streaming failed: {e}")
-            raise
-
-    async def generate_plan(
-        self,
-        system_prompt: str,
-        user_message: str,
-        tools_schema: Dict[str, Any],
-        thinking_callback: Optional[callable] = None
-    ) -> Dict[str, Any]:
-        """Generate plan using OpenAI function calling."""
-        # OpenAI has native function calling support
-        # Implementation would use tools parameter
-        pass
-```
-
----
-
-### 6.5.4 Ollama Provider Implementation
+### 6.5.3 Ollama Provider Implementation
 
 ```python
 # llm/ollama_provider.py
@@ -3672,14 +3553,13 @@ Respond with ONLY valid JSON, no other text."""
 
 ---
 
-### 6.5.5 LLM Provider Manager
+### 6.5.4 LLM Provider Manager
 
 ```python
 # llm/manager.py
 
 from llm.provider import LLMProvider
 from llm.gemini_provider import GeminiProvider
-from llm.openai_provider import OpenAIProvider
 from llm.ollama_provider import OllamaProvider
 from typing import Dict, Any, Optional
 import yaml
@@ -3718,13 +3598,8 @@ class LLMProviderManager:
 
                 if provider_type == "gemini":
                     self.providers[provider_name] = GeminiProvider(provider_config)
-                elif provider_type == "openai":
-                    self.providers[provider_name] = OpenAIProvider(provider_config)
                 elif provider_type == "ollama":
                     self.providers[provider_name] = OllamaProvider(provider_config)
-                elif provider_type == "anthropic":
-                    # Add Anthropic provider implementation
-                    pass
                 else:
                     logger.warning(f"Unknown provider type: {provider_type}")
 
@@ -4419,35 +4294,6 @@ llm_config:
       max_tokens: 8192
       timeout_seconds: 60
 
-    # OpenAI
-    openai_gpt4o:
-      provider: openai
-      model: gpt-4o
-      api_key: ${OPENAI_API_KEY}
-      base_url: https://api.openai.com/v1
-      temperature: 0.3
-      max_tokens: 4096
-      timeout_seconds: 30
-
-    openai_gpt4o_mini:
-      provider: openai
-      model: gpt-4o-mini
-      api_key: ${OPENAI_API_KEY}
-      base_url: https://api.openai.com/v1
-      temperature: 0.3
-      max_tokens: 4096
-      timeout_seconds: 20
-
-    # Anthropic Claude
-    claude_sonnet:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
-      api_key: ${ANTHROPIC_API_KEY}
-      base_url: https://api.anthropic.com
-      temperature: 0.3
-      max_tokens: 4096
-      timeout_seconds: 30
-
     # Ollama (Local)
     ollama_llama3:
       provider: ollama
@@ -4492,7 +4338,7 @@ llm_config:
     tool_default: gemini_flash
 
     # Recovery planning (when step fails)
-    recovery_planner: openai_gpt4o_mini
+    recovery_planner: gemini_flash
 
   # ============================================================================
   # Per-Tool LLM Override
@@ -4502,7 +4348,7 @@ llm_config:
   tool_overrides:
     # CVE analysis tools - use powerful models for accuracy
     cve_go_fetch_vulnerability_data: gemini_pro
-    cve_go_diagnose_upgrade_failure: openai_gpt4o
+    cve_go_diagnose_upgrade_failure: gemini_pro
 
     # Simple extraction - use fast/cheap models
     cve_go_extract_request_details: gemini_flash
@@ -4519,7 +4365,7 @@ llm_config:
 
   fallback:
     enabled: true
-    provider: openai_gpt4o_mini  # Fallback to this provider
+    provider: gemini_flash  # Fallback to this provider
     trigger_on:
       - timeout
       - rate_limit
@@ -4879,3 +4725,9 @@ When adding a new tool:
 *Document Version: 2.0*
 *Last Updated: February 2026*
 
+**Changelog:**
+- v2.0: Added purpose-based tool naming convention and multi-dimensional indexing
+- v2.0: Added Confluence, Jira, and QE tool examples
+- v2.0: Updated SessionData model with new state fields
+- v2.0: Enhanced ToolRegistry with purpose/technology search
+- v1.0: Initial LLD with Go CVE remediation tools
