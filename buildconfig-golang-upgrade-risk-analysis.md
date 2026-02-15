@@ -10,20 +10,40 @@ The builder binary is compiled with varying Go versions across OCP releases 4.12
 
 **The core concern**: Changing the Go compiler version changes the behavior of the Go standard library that the builder and all its dependencies are compiled against. Since the builder executes customer workloads, any behavioral change could impact end-user build operations across the entire cluster.
 
-### Current State of the Builder
+### Current State
 
-| OCP Release | Builder go.mod `go` directive | Current Go Compiler |
-|-------------|-------------------------------|---------------------|
-| 4.12 | 1.19 | Go 1.19.x |
-| 4.13 | 1.19 | Go 1.19.x |
-| 4.14 | 1.19 | Go 1.19.x |
-| 4.15 | 1.19 | Go 1.19.x |
-| 4.16 | 1.21 | Go 1.21.x |
-| 4.17 | 1.22.0 | Go 1.22.0 |
-| 4.18 | 1.22.0 | Go 1.22.0 |
-| 4.19 | 1.22.8 | Go 1.22.8 |
-| 4.20 | 1.22.8 | Go 1.22.8 |
-| 4.21 | 1.22.8 | Go 1.22.8 |
+| OCP Release | BuildConfig Go | OCP Suggestion (ART Gate) | Buildah Version | Buildah Go |
+|-------------|---------------|---------------------------|-----------------|------------|
+| 4.12 | 1.19 | 1.19 | v1.26.9 | 1.16 |
+| 4.13 | 1.19 | 1.19 | v1.29.5 | 1.17 |
+| 4.14 | 1.19 | 1.20 | v1.33.12 | 1.20 |
+| 4.15 | 1.19 | 1.20 | v1.33.12 | 1.20 |
+| 4.16 | 1.21 | 1.21 | v1.33.12 | 1.20 |
+| 4.17 | 1.22.0 | 1.22 | v1.37.7 | 1.22.0 |
+| 4.18 | 1.22.0 | 1.22 | v1.37.7 | 1.22.0 |
+| 4.19 | 1.22.8 | 1.23 | v1.39.7 | 1.22.8 |
+| 4.20 | 1.22.8 | 1.24 | v1.39.7 | 1.22.8 |
+| 4.21 | 1.22.8 | 1.25 | v1.39.7 | 1.22.8 |
+
+### Future State (After Go Bump)
+
+| OCP Release | BuildConfig Go | OCP Suggestion (ART Gate) | Buildah Version | Buildah Go |
+|-------------|---------------|---------------------------|-----------------|------------|
+| 4.12 | **1.22.z** | 1.22 | v1.26.z | **1.22** |
+| 4.13 | **1.22.z** | 1.22 | v1.29.z | **1.22** |
+| 4.14 | **1.22.z** | 1.22 | v1.33.z | **1.22** |
+| 4.15 | **1.22.z** | 1.22 | v1.33.z | **1.22** |
+| 4.16 | **1.22.z** | 1.22 | v1.33.z | **1.22** |
+| 4.17 | 1.22.z | 1.22 | v1.37.z | 1.22 |
+| 4.18 | 1.22.z | 1.22 | v1.37.z | 1.22 |
+| 4.19 | 1.22.z | 1.23 | v1.39.z | 1.22 |
+| 4.20 | 1.22.z | 1.24 | v1.39.z | 1.22 |
+| 4.21 | 1.22.z | 1.25 | v1.39.z | 1.22 |
+
+**Key observations:**
+- **4.17–4.21 require NO meaningful Go upgrade** — 4.17-4.18 are already at Go 1.22.0 (patch-level z-stream is not a behavioral change), and 4.19-4.21 are already at Go 1.22.8 with ART gates even higher (1.23–1.25).
+- **4.12–4.16 are the ONLY branches that require actual Go version upgrades.** These are the focus of this analysis.
+- **Buildah is also bumped** — importantly, buildah's own Go version changes too (e.g., v1.26.9 goes from Go 1.16 → 1.22, a 6 minor version jump). Since the builder imports buildah as a Go library, this is part of the same binary compilation.
 
 ### Builder's Key Dependencies
 
@@ -46,16 +66,22 @@ The builder imports a significant number of libraries. When the Go compiler chan
 
 ### Notable `replace` Directives in 4.12
 
-The builder 4.12 go.mod contains critical `replace` directives that pin dependencies to specific versions:
+Both 4.12 and 4.13 go.mod files contain `replace` directives that pin `golang.org/x/crypto` to old versions:
 
+**Builder 4.12:**
 ```
-golang.org/x/crypto => golang.org/x/crypto v0.0.0-20200323165209-0ec3e9974c59
+golang.org/x/crypto => golang.org/x/crypto v0.0.0-20200323165209-0ec3e9974c59  (March 2020, Go 1.14 era)
 golang.org/x/net => golang.org/x/net v0.17.0
 github.com/docker/docker => github.com/docker/docker v0.0.0-20200911110540-7ca355652fe0
 github.com/containerd/containerd => github.com/containerd/containerd v1.6.6
 ```
 
-The `golang.org/x/crypto` pin to a March 2020 version is noteworthy — this is from the Go 1.14 era. While x/crypto provides supplemental cryptographic primitives (not the TLS stack — that's in Go's standard library `crypto/tls`), this pin may cause compilation compatibility issues with Go 1.22. See section 3.7.
+**Builder 4.13:**
+```
+golang.org/x/crypto => golang.org/x/crypto v0.0.0-20220919173607-35f4265a4bc0  (September 2022, Go 1.19 era)
+```
+
+The 4.12 pin to a March 2020 `x/crypto` is the highest compilation risk — this is from the Go 1.14 era. The 4.13 pin to September 2022 is less risky but still needs verification. While `x/crypto` provides supplemental cryptographic primitives (not the TLS stack — that's in Go's standard library `crypto/tls`), these old pins may cause compilation compatibility issues with Go 1.22. See section 3.7.
 
 ---
 
@@ -63,32 +89,38 @@ The `golang.org/x/crypto` pin to a March 2020 version is noteworthy — this is 
 
 ### Target State
 
-Bump the Go compiler version to **Go 1.22.z** across ALL maintained release branches (4.12 through 4.21).
+Bump the Go compiler version to **Go 1.22.z** for both the OpenShift Builder and Buildah across release branches 4.12 through 4.16. Branches 4.17–4.21 are already at Go 1.22.x and require no meaningful changes.
 
 ### What Changes and What Does Not
 
 | Aspect | Changes? | Details |
 |--------|----------|---------|
-| Go compiler version | **YES** | Bumped to Go 1.22.z on all branches |
+| Go compiler version (Builder) | **YES** (4.12–4.16 only) | Bumped to Go 1.22.z. 4.17+ already at 1.22.x — no change. |
+| Go compiler version (Buildah) | **YES** (4.12–4.16 only) | Bumped to Go 1.22.z (buildah currently lags behind builder on some branches). 4.17+ already at 1.22.x. |
 | go.mod `go` directive | **Likely YES** | Should match compiler version per Go conventions |
 | Builder source code | NO | No code changes |
+| Buildah source code | NO | No code changes |
 | Dependency versions (go.mod `require`) | NO | All dependency versions stay the same |
 | `replace` directives | NO | Existing pins remain |
 
 ### Branch-by-Branch Go Version Jump
 
-| OCP Release | Current Go | Target Go | Size of Jump |
-|-------------|-----------|-----------|--------------|
-| **4.12** | 1.19 | 1.22.z | **3 minor versions** |
-| **4.13** | 1.19 | 1.22.z | **3 minor versions** |
-| **4.14** | 1.19 | 1.22.z | **3 minor versions** |
-| **4.15** | 1.19 | 1.22.z | **3 minor versions** |
-| **4.16** | 1.21 | 1.22.z | 1 minor version |
-| **4.17** | 1.22.0 | 1.22.z | Patch only |
-| **4.18** | 1.22.0 | 1.22.z | Patch only |
-| **4.19** | 1.22.8 | 1.22.z | Already at target |
-| **4.20** | 1.22.8 | 1.22.z | Already at target |
-| **4.21** | 1.22.8 | 1.22.z | Already at target |
+| OCP Release | Builder Go Jump | Buildah Go Jump | Scope |
+|-------------|----------------|-----------------|-------|
+| **4.12** | 1.19 → 1.22.z | **1.16 → 1.22** (6 minor) | **Largest jump — highest scrutiny** |
+| **4.13** | 1.19 → 1.22.z | **1.17 → 1.22** (5 minor) | Large jump |
+| **4.14** | 1.19 → 1.22.z | 1.20 → 1.22 (2 minor) | Moderate jump |
+| **4.15** | 1.19 → 1.22.z | 1.20 → 1.22 (2 minor) | Moderate jump |
+| **4.16** | 1.21 → 1.22.z | 1.20 → 1.22 (2 minor) | Small jump |
+| **4.17** | Already 1.22.0 | Already 1.22.0 | **No change needed** |
+| **4.18** | Already 1.22.0 | Already 1.22.0 | **No change needed** |
+| **4.19** | Already 1.22.8 | Already 1.22.8 | **No change needed** |
+| **4.20** | Already 1.22.8 | Already 1.22.8 | **No change needed** |
+| **4.21** | Already 1.22.8 | Already 1.22.8 | **No change needed** |
+
+**The real work is concentrated on 4.12–4.16.** Branches 4.17–4.21 are already at Go 1.22.x and require no action.
+
+**The buildah Go version jump for 4.12 (Go 1.16 → 1.22) is the single largest jump** in this plan. Since the builder imports buildah as a Go library, buildah's code is compiled as part of the builder binary, making this relevant to the builder's behavior.
 
 ---
 
@@ -241,18 +273,20 @@ The builder reads Docker credentials from the filesystem via `cmd/dockercfg/cfg.
 
 This is pure file I/O and JSON parsing — no network or TLS operations. **No Go version impact.**
 
-### 3.7 Compilation Compatibility: x/crypto Pin in 4.12
+### 3.7 Compilation Compatibility: x/crypto Pin in 4.12 and 4.13
 
-Builder 4.12 pins `golang.org/x/crypto` to a March 2020 version via a `replace` directive:
+Both 4.12 and 4.13 pin `golang.org/x/crypto` to old versions via `replace` directives:
 
-```
-golang.org/x/crypto => golang.org/x/crypto v0.0.0-20200323165209-0ec3e9974c59
-```
+| Branch | `replace` Pin | Pin Date | Era |
+|--------|--------------|----------|-----|
+| **4.12** | `v0.0.0-20200323165209-0ec3e9974c59` | **March 2020** | Go 1.14 |
+| **4.13** | `v0.0.0-20220919173607-35f4265a4bc0` | **September 2022** | Go 1.19 |
+| 4.14+ | No replace — uses `v0.19.0` directly | February 2024 | Go 1.21+ |
 
 **Risk assessment**:
 - `golang.org/x/crypto` provides supplemental crypto primitives (SSH, bcrypt, chacha20poly1305, curve25519, etc.) — NOT the TLS stack (that's `crypto/tls` in the standard library).
-- Go maintains backward compatibility for `x/` packages, but a version from 2020 is very old. There is a risk of compilation errors if newer Go versions introduce breaking changes in internal APIs that `x/crypto` depends on.
-- **Recommendation**: Verify that `go build` succeeds with Go 1.22 on the 4.12 branch WITHOUT any code changes. If compilation fails due to the `x/crypto` pin, the `replace` directive will need to be updated to a newer `x/crypto` version. Builder branches 4.14+ use `golang.org/x/crypto v0.19.0` (no replace), so this only affects 4.12–4.13.
+- Go maintains backward compatibility for `x/` packages, but x/crypto versions interact with internal Go compiler/runtime APIs. The March 2020 pin (4.12) is the highest risk — spanning 4 years and 8 Go minor versions. The September 2022 pin (4.13) is lower risk but still 2+ years old.
+- **Recommendation**: Verify that `go build` succeeds with Go 1.22 on BOTH the 4.12 and 4.13 branches WITHOUT any code changes. If compilation fails due to the `x/crypto` pin, the `replace` directive will need to be updated to a newer `x/crypto` version.
 
 ### 3.8 Go Standard Library Behavioral Changes
 
@@ -302,17 +336,19 @@ Only these GODEBUG settings change when moving from effective `go 1.20` to `go 1
 
 Go 1.22 changes loop variable capture to per-iteration scope. This is controlled by each module's `go` directive, NOT the main module's:
 
-| Module | go.mod `go` directive | Gets New Semantics? |
-|--------|----------------------|---------------------|
-| **openshift/builder** (main module) | 1.22 (after bump) | **YES** — builder's own code |
-| containers/buildah v1.26.9 | 1.16 | No |
-| containers/image v5.22.0 | 1.17 | No |
-| containers/buildah v1.33.12 | 1.20 | No |
-| containers/image v5.29.4 | 1.19 | No |
-| openshift/source-to-image v1.3.2 | 1.18 | No |
-| k8s.io/client-go v0.25.2 | ~1.19 | No |
+| Module | go.mod `go` directive | Gets New Semantics? | Notes |
+|--------|----------------------|---------------------|-------|
+| **openshift/builder** (main module) | 1.22 (after bump) | **YES** — builder's own code | Audited: no affected patterns found |
+| containers/buildah v1.26.9 | 1.16 | No — unless go.mod is also bumped | If buildah's go.mod `go` directive is bumped to 1.22, YES |
+| containers/buildah v1.33.12 | 1.20 | No — unless go.mod is also bumped | Same caveat |
+| containers/image v5.22.0 | 1.17 | No | Dependency module, not main |
+| containers/image v5.29.4 | 1.19 | No | Dependency module, not main |
+| openshift/source-to-image v1.3.2 | 1.18 | No | Dependency module, not main |
+| k8s.io/client-go v0.25.2 | ~1.19 | No | Dependency module, not main |
 
-**Source code audit**: Manual review of all builder source files (`daemonless.go`, `docker.go`, `source.go`, `sti.go`, `common.go`, `dockerutil.go`, `util.go`, `transient_mounts.go`) found **no closure-captured loop variables** that would change behavior.
+**Important caveat for buildah**: If the buildah repo's go.mod `go` directive is also bumped to `1.22` (as implied by the "Buildah Go" column in the plan), then buildah's own code DOES get per-iteration loop semantics. Buildah has goroutines inside for-loops in `add.go` (lines 392, 398, 492, 527), but all are synchronized with `wg.Wait()` before the next iteration, so behavior is identical under old and new semantics.
+
+**Source code audit**: Manual review of all builder source files (`daemonless.go`, `docker.go`, `source.go`, `sti.go`, `common.go`, `dockerutil.go`, `util.go`, `transient_mounts.go`) found **no closure-captured loop variables** that would change behavior. Buildah's goroutine-in-loop patterns in `add.go` were also verified safe.
 
 #### 3.8.5 Deprecated APIs Still Used
 
@@ -340,16 +376,17 @@ These would already be active under the current GODEBUG mapping (`go 1.20`). **N
 
 ### Per-Release Risk Matrix
 
-| OCP | Go Jump | GODEBUG Jump | TLS Impact | x/crypto Risk | Overall |
-|-----|---------|-------------|------------|---------------|---------|
-| **4.12** | 1.19→1.22 | go1.20→go1.22 | NONE (explicit MinVersion + CipherSuites) | **Compile check needed** (2020 pin) | **LOW** |
-| **4.13** | 1.19→1.22 | go1.20→go1.22 | NONE (explicit MinVersion + CipherSuites) | Check needed | **LOW** |
-| **4.14** | 1.19→1.22 | go1.20→go1.22 | NONE (explicit CipherSuites, TLS 1.2 default) | None (v0.19.0) | **LOW** |
-| **4.15** | 1.19→1.22 | go1.20→go1.22 | NONE (same as 4.14) | None (v0.19.0) | **LOW** |
-| **4.16** | 1.21→1.22 | go1.21→go1.22 | NONE (same as 4.14) | None (v0.19.0) | **MINIMAL** |
-| **4.17** | patch | None | NONE | None | **NONE** |
-| **4.18** | patch | None | NONE | None | **NONE** |
-| **4.19–21** | none | None | NONE | None | **NONE** |
+| OCP | Builder Go Jump | Buildah Go Jump | GODEBUG Jump | TLS Impact | x/crypto Risk | Overall |
+|-----|----------------|-----------------|-------------|------------|---------------|---------|
+| **4.12** | 1.19→1.22 | **1.16→1.22** | go1.20→go1.22 | NONE (explicit MinVersion + CipherSuites) | **Compile check needed** (2020 pin) | **LOW** |
+| **4.13** | 1.19→1.22 | **1.17→1.22** | go1.20→go1.22 | NONE (explicit MinVersion + CipherSuites) | **Compile check needed** (Sep 2022 pin) | **LOW** |
+| **4.14** | 1.19→1.22 | 1.20→1.22 | go1.20→go1.22 | NONE (explicit CipherSuites, TLS 1.2 default) | None (v0.19.0) | **LOW** |
+| **4.15** | 1.19→1.22 | 1.20→1.22 | go1.20→go1.22 | NONE (same as 4.14) | None (v0.19.0) | **LOW** |
+| **4.16** | 1.21→1.22 | 1.20→1.22 | go1.21→go1.22 | NONE (same as 4.14) | None (v0.19.0) | **MINIMAL** |
+| **4.17–18** | **no change** (already 1.22.0) | **no change** | None | NONE | None | **NONE** |
+| **4.19–21** | **no change** (already 1.22.8) | **no change** | None | NONE | None | **NONE** |
+
+**Note**: 4.17–4.21 are already at Go 1.22.x. No meaningful Go upgrade is needed for these branches. The analysis below focuses on 4.12–4.16.
 
 ### Why the Risk is Lower Than Initially Expected
 
@@ -373,25 +410,28 @@ These would already be active under the current GODEBUG mapping (`go 1.20`). **N
 
 Before submitting the Go bump, verify the following:
 
-**For ALL branches (4.12–4.18):**
+**For ALL branches (4.12–4.16):**
 - [ ] `go build` succeeds with Go 1.22.z without source code changes
 - [ ] `go vet` passes without new issues
 - [ ] Existing unit tests pass
 - [ ] CI pipeline produces a valid builder image
 
-**For 4.12–4.13 specifically:**
-- [ ] Verify compilation with the pinned `golang.org/x/crypto v0.0.0-20200323165209` — if it fails, the `replace` directive needs updating
+**For 4.12 specifically:**
+- [ ] Verify compilation with the pinned `golang.org/x/crypto v0.0.0-20200323165209` (March 2020) — highest compilation risk; if it fails, the `replace` directive needs updating
 - [ ] Verify compilation with the pinned `github.com/docker/docker v0.0.0-20200911110540` — very old version, potential compatibility issues
 - [ ] Verify compilation with the pinned `github.com/containerd/containerd v1.6.6`
 
+**For 4.13 specifically:**
+- [ ] Verify compilation with the pinned `golang.org/x/crypto v0.0.0-20220919173607` (September 2022) — lower risk than 4.12 but still needs verification
+
 ### 5.2 Implementation Order
 
-Start with the lowest-risk branches and work backward:
+Start with the lowest-risk branches and work backward. Branches 4.17–4.21 require no action (already at Go 1.22.x).
 
-1. **Phase 1**: 4.17–4.18 — Patch-level bump only (Go 1.22.0 → 1.22.z). Effectively zero risk.
-2. **Phase 2**: 4.16 — One minor version jump (Go 1.21 → 1.22). Very low risk.
-3. **Phase 3**: 4.14–4.15 — Larger jump (Go 1.19 → 1.22) but with modern dependencies (c/image v5.29.4, x/crypto v0.19.0). Low risk.
-4. **Phase 4**: 4.12–4.13 — Same Go jump but with oldest dependencies and pinned x/crypto. Requires compilation verification.
+1. **Phase 1**: 4.16 — Builder: Go 1.21 → 1.22 (1 minor). Buildah: Go 1.20 → 1.22 (2 minor). Smallest jump. Low risk.
+2. **Phase 2**: 4.14–4.15 — Builder: Go 1.19 → 1.22 (3 minor). Buildah: Go 1.20 → 1.22 (2 minor). Modern dependencies (c/image v5.29.4, x/crypto v0.19.0). Low risk.
+3. **Phase 3**: 4.13 — Builder: Go 1.19 → 1.22 (3 minor). **Buildah: Go 1.17 → 1.22 (5 minor)**. Older dependencies. Needs compilation verification.
+4. **Phase 4**: 4.12 — Builder: Go 1.19 → 1.22 (3 minor). **Buildah: Go 1.16 → 1.22 (6 minor — the largest jump in the entire plan)**. Oldest dependencies, pinned x/crypto from March 2020. Requires thorough compilation and runtime verification.
 
 ### 5.3 go.mod `go` Directive Decision
 
@@ -496,19 +536,19 @@ Suggested release note text:
 
 ### A. Complete Builder Dependency Version Matrix
 
-| Dependency | 4.12 | 4.14 | 4.16 | 4.17 | 4.19 |
-|-----------|------|------|------|------|------|
-| **go directive** | 1.19 | 1.19 | 1.21 | 1.22.0 | 1.22.8 |
-| containers/buildah | v1.26.9 (go 1.16) | v1.33.12 (go 1.20) | v1.33.12 (go 1.20) | v1.37.7 | v1.39.7 (go 1.22.8) |
-| containers/image | v5.22.0 (go 1.17) | v5.29.4 (go 1.19) | v5.29.4 (go 1.19) | v5.32.2 | v5.34.3 (go 1.22.8) |
-| containers/storage | v1.42.0 | v1.51.2 | v1.51.2 | v1.55.1 | v1.57.2 |
-| containers/common | v0.49.1 | v0.57.7 | v0.57.7 | v0.60.4 | v0.62.3 |
-| openshift/source-to-image | v1.3.2 (go 1.18) | v1.3.2 | v1.3.2 | v1.4.0 | v1.4.0 |
-| openshift/imagebuilder | v1.2.4 | v1.2.15 | v1.2.15 | v1.2.15 | v1.2.15 |
-| fsouza/go-dockerclient | v1.7.11 | v1.10.x | v1.10.x | v1.12.0 | v1.12.0 |
-| k8s.io/client-go | v0.25.2 | v0.28.2 | v0.28.2 | v0.30.2 | v0.30.2 |
-| golang.org/x/crypto | **PINNED 2020** | v0.19.0 | v0.19.0 | v0.28.0 | v0.29.0 |
-| golang.org/x/net | v0.17.0 (replace) | v0.17.0 (replace) | v0.18.0 | v0.30.0 | v0.33.0 |
+| Dependency | 4.12 | 4.13 | 4.14 | 4.16 | 4.17 | 4.19 |
+|-----------|------|------|------|------|------|------|
+| **go directive** | 1.19 | 1.19 | 1.19 | 1.21 | 1.22.0 | 1.22.8 |
+| containers/buildah | v1.26.9 (go 1.16) | v1.29.5 (go 1.17) | v1.33.12 (go 1.20) | v1.33.12 (go 1.20) | v1.37.7 | v1.39.7 (go 1.22.8) |
+| containers/image | v5.22.0 (go 1.17) | v5.24.1 | v5.29.4 (go 1.19) | v5.29.4 (go 1.19) | v5.32.2 | v5.34.3 (go 1.22.8) |
+| containers/storage | v1.42.0 | v1.45.3 | v1.51.2 | v1.51.2 | v1.55.1 | v1.57.2 |
+| containers/common | v0.49.1 | v0.51.2 | v0.57.7 | v0.57.7 | v0.60.4 | v0.62.3 |
+| openshift/source-to-image | v1.3.2 (go 1.18) | v1.3.2 | v1.3.2 | v1.3.2 | v1.4.0 | v1.4.0 |
+| openshift/imagebuilder | v1.2.4 | v1.2.4 | v1.2.15 | v1.2.15 | v1.2.15 | v1.2.15 |
+| fsouza/go-dockerclient | v1.7.11 | v1.9.3 | v1.10.x | v1.10.x | v1.12.0 | v1.12.0 |
+| k8s.io/client-go | v0.25.2 | v0.26.1 | v0.28.2 | v0.28.2 | v0.30.2 | v0.30.2 |
+| golang.org/x/crypto | **PINNED Mar 2020** | **PINNED Sep 2022** | v0.19.0 | v0.19.0 | v0.28.0 | v0.29.0 |
+| golang.org/x/net | v0.17.0 (replace) | v0.17.0 (replace) | v0.17.0 (replace) | v0.18.0 | v0.30.0 | v0.33.0 |
 
 ### B. Local Code Analysis Findings (from cloned repos)
 
