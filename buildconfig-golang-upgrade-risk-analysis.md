@@ -778,3 +778,4 @@ exec.Command("cp", "-vLRf", src, dst)
 
 // source.go — git clone handled by git binary via GitClient interface
 ```
+
