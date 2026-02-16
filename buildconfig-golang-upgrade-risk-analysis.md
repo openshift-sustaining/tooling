@@ -133,68 +133,23 @@ The table below shows **compiler jumps** (ART Gate → target), which determine 
 
 ## 3. Go Standard Library Changes by Version
 
-This section catalogs the **behavioral changes** introduced in each Go release from 1.17 through 1.22 that are relevant to the builder/buildah binary. Not all changes apply to all branches — each branch only picks up changes between its current compiler version and Go 1.22.
+This section catalogs the **behavioral changes** in each Go release that will be newly introduced into the builder binary by the Go 1.22 bump. Only Go 1.20, 1.21, and 1.22 are covered — changes from Go 1.17 through 1.19 are already compiled into the currently-shipping builder binary (ART Gate ≥ 1.19 for all branches) and are not impacted.
 
 **Which changes are newly introduced into the builder binary by this bump:**
 
-| Go Version Changes | 4.12 (1.19→1.22) | 4.13 (1.19→1.22) | 4.14–4.15 (1.20→1.22) | 4.16 (1.21→1.22) |
-|-------------------|:-:|:-:|:-:|:-:|
-| Go 1.17 changes | — | — | — | — |
-| Go 1.18 changes | — | — | — | — |
-| Go 1.19 changes | — | — | — | — |
-| Go 1.20 changes | **YES** | **YES** | — | — |
-| Go 1.21 changes | **YES** | **YES** | **YES** | — |
-| Go 1.22 changes | **YES** | **YES** | **YES** | **YES** |
+| Go Version Changes | 4.12–4.13 (ART 1.19→1.22) | 4.14–4.15 (ART 1.20→1.22) | 4.16 (ART 1.21→1.22) |
+|-------------------|:-:|:-:|:-:|
+| Go 1.20 changes | **YES** | — | — |
+| Go 1.21 changes | **YES** | **YES** | — |
+| Go 1.22 changes | **YES** | **YES** | **YES** |
 
-**Note**: "—" means the change is already compiled into the currently-shipping builder binary (the ART Gate compiler is at or above that version). "YES" means the change will be newly introduced by the Go 1.22 bump. All upstream dependencies (buildah, containers/image, etc.) are compiled as part of the builder binary, so these changes apply to the builder AND all its dependency code equally.
+**Note**: "—" means the change is already compiled into the currently-shipping builder binary. "YES" means it will be newly introduced. All upstream dependencies (buildah, containers/image, etc.) are compiled as part of the builder binary, so these changes apply to the builder AND all its dependency code equally.
 
 **Per-module `go` directive caveat**: While the builder's compiler determines the stdlib code, some Go 1.22 behavioral changes (specifically loop variable scoping) are controlled by each module's own go.mod `go` directive. Upstream dependencies with a `go` directive below 1.22 retain old loop variable semantics even when compiled with Go 1.22. See Section 4.8.4 and Appendix A for details.
 
 ---
 
-### 3.1 Go 1.17 Changes (already in builder — listed for reference)
-
-These changes are already compiled into the builder binary (ART Gate ≥ 1.19 for all branches). They are listed here for completeness, as they represent the cumulative stdlib changes since Go 1.16. No new impact from the Go 1.22 bump.
-
-| Change | Package | Type | GODEBUG | Builder Relevance |
-|--------|---------|------|---------|-------------------|
-| **Semicolons rejected as URL query separators** — `url.ParseQuery` no longer accepts `;` as separator. `?a=1;b=2&c=3` returns only `{c:[3]}`. | `net/url` | Breaking | None (`AllowQuerySemicolons()` wrapper available) | **LOW** — registry URLs don't use semicolons in query strings |
-| **Leading zeros in IPv4 rejected** — `net.ParseIP` rejects `010.0.0.1` (ambiguous octal). | `net` | Breaking | None | **LOW** — container networking configs rarely use leading zeros |
-| **Common Name fallback permanently removed** — `GODEBUG=x509ignoreCN=0` flag deleted. Certs MUST use Subject Alternative Names. | `crypto/x509` | Breaking | Removed | **NONE** — already enforced in builder (Go 1.19) |
-| **`CreateCertificate` validates key match** — Returns error if private key doesn't match parent cert public key. | `crypto/x509` | Behavioral | None | **NONE** — builder doesn't create certificates |
-| **`mime/multipart` path traversal fix** — `Part.FileName()` strips directory components via `filepath.Base()`. | `mime/multipart` | Security fix | None | **LOW** — buildah doesn't process multipart uploads |
-| **Register-based calling convention (amd64)** — ~5% performance improvement, ~2% smaller binaries. Breaks code relying on stack frame layout via `unsafe.Pointer`. | `runtime` | Behavioral | None | **POSITIVE** — performance improvement, no unsafe usage found |
-| **Multiple Host headers rejected** in HTTP requests. | `net/http` | Behavioral | None | **NONE** — builder is a client, not a server |
-| **TLS cipher suite ordering now handled by `crypto/tls`** — `Config.CipherSuites` order is ignored; TLS stack chooses optimal order. | `crypto/tls` | Behavioral | None | **NONE** — c/image sets cipher suites explicitly, but ordering change is transparent |
-
-### 3.2 Go 1.18 Changes (already in builder — listed for reference)
-
-| Change | Package | Type | GODEBUG | Builder Relevance |
-|--------|---------|------|---------|-------------------|
-| **TLS 1.0/1.1 disabled by default for clients** — `Config.MinVersion` now defaults to TLS 1.2 for client connections. | `crypto/tls` | Breaking | `tls10default=1` (removed in 1.19) | **NONE** — c/image v5.22.0 explicitly sets `MinVersion: tls.VersionTLS10`, overriding this default |
-| **SHA-1 certificate rejection** — Certs signed with SHA-1 hash rejected during verification (except self-signed roots). | `crypto/x509` | Breaking | `x509sha1=1` (still available) | **LOW** — already active in builder via GODEBUG mapping. Cert verification is handled by containers/image, not direct builder code. |
-| **Platform certificate verification on macOS/iOS** — `Certificate.Verify` uses OS-level APIs when `Roots` is nil. | `crypto/x509` | Behavioral | None | **NONE** — builder runs on Linux |
-| **Slice append growth formula changed** — `append()` uses smoother growth formula. Code depending on specific slice capacities may see different values. | `runtime` | Behavioral | None | **NONE** — no code depends on exact slice capacity |
-| **GC includes non-heap work** — GC frequency may change. | `runtime` | Behavioral | None | **LOW** — GC timing changes are transparent |
-| **IDNA Nontransitional Processing** — Domain name Unicode processing changed for `ß`, `ς`, ZWJ, ZWNJ. | `net/http` | Behavioral | None | **NONE** — container registry domains don't use these characters |
-| **`strconv.Unquote` rejects Unicode surrogate halves** (U+D800–U+DFFF). | `strconv` | Behavioral | None | **NONE** — no known usage in buildah |
-| **`text/template` short-circuit evaluation** — `and`/`or` functions now short-circuit. | `text/template` | Behavioral | None | **LOW** — buildah uses templates minimally |
-
-### 3.3 Go 1.19 Changes (already in builder — listed for reference)
-
-| Change | Package | Type | GODEBUG | Builder Relevance |
-|--------|---------|------|---------|-------------------|
-| **`exec.LookPath` no longer searches current directory** — Security hardening: PATH lookup won't find binaries relative to CWD. | `os/exec` | Breaking | None | **CHECK NEEDED** — buildah uses `exec.Command` for container runtimes (`runc`/`crun`), `slirp4netns`, overlay mount programs. All use explicit paths, so likely safe. |
-| **`GODEBUG=tls10default=1` permanently removed** — No way to restore TLS 1.0 as client default via GODEBUG. | `crypto/tls` | Breaking | Removed | **NONE** — c/image uses explicit `MinVersion` |
-| **TLS duplicate extension rejection** — Handshakes with duplicate extensions are rejected. | `crypto/tls` | Behavioral | None | **NONE** — standard registries don't send duplicate extensions |
-| **`crypto/x509` rejects duplicate extensions** in `ParseCertificate` / `ParseCertificateRequest`. | `crypto/x509` | Breaking | None | **LOW** — malformed certs are rare in practice |
-| **`RLIMIT_NOFILE` automatically raised** — Programs importing `os` raise soft file descriptor limit to hard limit at startup. Inherited by child processes. | `runtime` | Behavioral | None | **LOW** — container processes inherit higher FD limit. Generally beneficial. |
-| **Soft memory limit** via `GOMEMLIMIT` environment variable. | `runtime` | Addition | None | **NONE** — opt-in, no default change |
-| **Sort algorithm changed** to pattern-defeating quicksort (faster but different ordering of equal elements). | `sort` | Behavioral | None | **LOW** — buildah doesn't depend on stable sort of equal elements |
-| **`net` timeout errors now match `context.DeadlineExceeded`** — `errors.Is(err, context.DeadlineExceeded)` returns true for I/O timeouts. | `net` | Behavioral | None | **LOW** — may affect error handling paths but is generally more correct |
-| **3xx redirects without Location header** returned to caller instead of treated as errors. | `net/http` | Behavioral | None | **LOW** — unusual for registries but safer behavior |
-
-### 3.4 Go 1.20 Changes (applies to: builder 4.12–4.13, buildah 4.12–4.13)
+### 3.1 Go 1.20 Changes (applies to: builder 4.12–4.13)
 
 These are the changes introduced when the compiler moves from Go 1.19 to Go 1.20. For builder 4.14–4.15, ART already compiles with Go 1.20, so these are already active.
 
@@ -210,7 +165,7 @@ These are the changes introduced when the compiler moves from Go 1.19 to Go 1.20
 | **`ReverseProxy` no longer injects User-Agent** header. | `net/http` | Behavioral | None | **NONE** — builder doesn't use ReverseProxy |
 | **`archive/zip` rejects data in directory entries**. | `archive/zip` | Behavioral | None | **NONE** — builder/buildah don't use Go's `archive/zip` |
 
-### 3.5 Go 1.21 Changes (applies to: builder 4.12–4.15, buildah 4.12–4.15)
+### 3.2 Go 1.21 Changes (applies to: builder 4.12–4.15)
 
 Go 1.21 formalizes the GODEBUG compatibility mechanism. For builder 4.16 (ART Gate 1.21), these changes are already compiled in.
 
@@ -229,7 +184,7 @@ Go 1.21 formalizes the GODEBUG compatibility mechanism. For builder 4.16 (ART Ga
 | **`flag` panics on duplicate flag definitions** — Programs registering the same flag name twice will panic at startup. | `flag` | Breaking | None | **CHECK NEEDED** — builder should be verified for duplicate flag registrations (unlikely) |
 | **`reflect.SliceHeader` / `StringHeader` deprecated** — Should use `unsafe.Slice`/`unsafe.String` instead. | `reflect` | Deprecation | None | **NONE** — no usage found in builder/buildah |
 
-### 3.6 Go 1.22 Changes (applies to: ALL branches 4.12–4.16)
+### 3.3 Go 1.22 Changes (applies to: ALL branches 4.12–4.16)
 
 | Change | Package | Type | GODEBUG | Builder Relevance |
 |--------|---------|------|---------|-------------------|
@@ -545,9 +500,68 @@ For 4.12–4.13, the Go 1.22 bump will introduce the Go 1.20 constant-time crypt
 
 ---
 
-## 6. Suggestions and Guidelines
+## 6. CI Test Coverage
 
-### 6.1 Pre-Implementation Checklist
+This section documents the existing CI test workflows that run for each builder release branch via `ci-operator`. These tests will serve as the validation gate after the Go compiler bump — if they pass, the builder binary behavior is confirmed unchanged.
+
+Source: `openshift/release` repo, `ci-operator/config/openshift/builder/openshift-builder-release-4.*.yaml`
+
+### 6.1 Container Tests (Unit / Verification)
+
+These run in a container from the `src` image without provisioning a cluster.
+
+| Test | Command | Behavior | 4.12 | 4.13 | 4.14 | 4.15 | 4.16 | 4.17 | 4.18 | 4.19 | 4.20 | 4.21 |
+|------|---------|----------|:----:|:----:|:----:|:----:|:----:|:----:|:----:|:----:|:----:|:----:|
+| `unit` | `make test` | skip_if_only_changed (docs) | YES | YES | YES | YES | YES | YES | YES | YES | YES | YES |
+| `verify` | `make verify` | skip_if_only_changed (docs) | YES | YES | YES | YES | YES | YES | YES | YES | YES | YES |
+
+### 6.2 E2E Workflow Tests (Cluster-Provisioned)
+
+These provision an AWS cluster and run end-to-end tests against a real OpenShift installation with the builder image under test.
+
+| Test | Workflow | Behavior | 4.12–4.21 |
+|------|----------|----------|:---------:|
+| `e2e-aws-ovn` | `openshift-e2e-aws` | skip_if_only_changed | ALL |
+| `e2e-aws-ovn-builds` | `openshift-e2e-aws-builds` | skip_if_only_changed | ALL |
+| `e2e-aws-ovn-proxy` | `openshift-e2e-aws-proxy` | optional, always_run=false | ALL |
+| `e2e-aws-ovn-image-ecosystem` | `openshift-e2e-aws-image-ecosystem` | skip_if_only_changed | ALL |
+| `e2e-aws-ovn-cgroupsv2` | `openshift-e2e-aws-cgroupsv2` | optional, always_run=false | ALL |
+| `e2e-aws-ovn-builds-techpreview` | `openshift-e2e-aws-builds` | optional, always_run=false (TechPreview) | ALL |
+| `security` | `openshift-ci-security` | optional | ALL |
+
+### 6.3 Dependency Verification (4.19+ only)
+
+| Test | Step Ref | 4.12–4.18 | 4.19–4.21 |
+|------|----------|:---------:|:---------:|
+| `verify-deps` | `go-verify-deps` | — | YES |
+
+### 6.4 Test Coverage Assessment
+
+**Total tests per branch:**
+- **4.12–4.18**: 9 tests (2 container + 7 e2e)
+- **4.19–4.21**: 10 tests (2 container + 7 e2e + 1 dep verification)
+
+**Coverage is uniform across all branches.** The same test workflows run on every release from 4.12 through 4.21. Key validation points:
+
+| BuildConfig Operation | Covered By | What It Validates |
+|----------------------|------------|-------------------|
+| Dockerfile build + image push | `e2e-aws-ovn-builds` | Full build lifecycle: pull base image → build → push to internal registry (TLS, auth, buildah execution) |
+| S2I build | `e2e-aws-ovn-builds` | Source-to-image strategy: pull builder image, run assemble/run scripts, push result |
+| Image ecosystem (various languages) | `e2e-aws-ovn-image-ecosystem` | Builds across multiple language stacks (Ruby, Python, Node.js, etc.) |
+| Build behind proxy | `e2e-aws-ovn-proxy` | HTTP/HTTPS proxy handling, `PROXY_URL` parsing |
+| Build with TechPreview features | `e2e-aws-ovn-builds-techpreview` | BuildConfig operations with `TechPreviewNoUpgrade` feature gate |
+| cgroups v2 compatibility | `e2e-aws-ovn-cgroupsv2` | Build execution under cgroups v2 (runtime behavior) |
+| General platform e2e | `e2e-aws-ovn` | Broad OpenShift conformance including builds |
+| Unit tests | `unit` | Builder source code logic, `make test` |
+| Code verification | `verify` | Lint, formatting, `make verify` |
+
+**Conclusion**: The existing CI coverage is sufficient to detect behavioral regressions from the Go compiler bump. The `e2e-aws-ovn-builds` and `e2e-aws-ovn-image-ecosystem` workflows exercise the full BuildConfig lifecycle — image pull (TLS), build execution (buildah), and image push (TLS + auth) — which are the primary paths where Go stdlib changes could surface.
+
+---
+
+## 7. Suggestions and Guidelines
+
+### 7.1 Pre-Implementation Checklist
 
 Before submitting the Go bump, verify the following:
 
@@ -565,7 +579,7 @@ Before submitting the Go bump, verify the following:
 **For 4.13 specifically:**
 - [ ] Verify compilation with the pinned `golang.org/x/crypto v0.0.0-20220919173607` (September 2022) — lower risk than 4.12 but still needs verification
 
-### 6.2 Implementation Order
+### 7.2 Implementation Order
 
 Start with the lowest-risk branches and work backward. Branches 4.17–4.21 require no action (already at Go 1.22.x).
 
@@ -574,7 +588,7 @@ Start with the lowest-risk branches and work backward. Branches 4.17–4.21 requ
 3. **Phase 3**: 4.13 — ART Gate 1.19 → 1.22 (3 minor). Older dependencies, pinned x/crypto from Sep 2022. Needs compilation verification.
 4. **Phase 4**: 4.12 — ART Gate 1.19 → 1.22 (3 minor). Oldest dependencies, pinned x/crypto from March 2020. Requires thorough compilation and runtime verification.
 
-### 6.3 go.mod `go` Directive Decision
+### 7.3 go.mod `go` Directive Decision
 
 **Recommended: Bump the `go` directive to `1.22`.**
 
@@ -589,7 +603,7 @@ Start with the lowest-risk branches and work backward. Branches 4.17–4.21 requ
 - Preserves GODEBUG at the `go 1.20` mapping level
 - Only gains the compiler's security fixes without adopting any new stdlib defaults
 
-### 6.4 GODEBUG Safety Net (Optional)
+### 7.4 GODEBUG Safety Net (Optional)
 
 If extra caution is desired, set GODEBUG overrides at deployment time via environment variable on the builder pod:
 
@@ -606,7 +620,7 @@ Or via Go source directive in the builder's main package:
 
 **Based on the analysis, these are likely unnecessary** — SHA-1 cert rejection was already active under Go 1.19, and HTTP content-length validation affects servers more than clients.
 
-### 6.5 Testing Strategy
+### 7.5 Testing Strategy
 
 #### Tier 1: Core BuildConfig Operations (All branches)
 
@@ -639,7 +653,7 @@ Or via Go source directive in the builder's main package:
 | Build with HTTP_PROXY/HTTPS_PROXY | Proxy connection through `http.ProxyFromEnvironment` |
 | Build with very large context | Memory and I/O behavior under new runtime |
 
-### 6.6 Monitoring After Rollout
+### 7.6 Monitoring After Rollout
 
 Watch for these specific error patterns in build logs:
 
@@ -652,7 +666,7 @@ Watch for these specific error patterns in build logs:
 | `unauthorized` or `authentication required` | HTTP header/auth handling change | Set `GODEBUG=httplaxcontentlength=1` |
 | Build pod panic/crash | `panic(nil)` behavior change or other runtime issue | Check pod logs for stack trace |
 
-### 6.7 Rollback Plan
+### 7.7 Rollback Plan
 
 | Severity | Action |
 |----------|--------|
@@ -661,7 +675,7 @@ Watch for these specific error patterns in build logs:
 | **Compilation failure** | Revert Go compiler version in build pipeline |
 | **Widespread build failures** | Revert the entire change (Go compiler + go.mod directive) |
 
-### 6.8 Release Notes Guidance
+### 7.8 Release Notes Guidance
 
 Suggested release note text:
 
@@ -673,7 +687,7 @@ Suggested release note text:
 
 ---
 
-## 7. Appendix
+## 8. Appendix
 
 ### A. Complete Builder Dependency Version Matrix
 
