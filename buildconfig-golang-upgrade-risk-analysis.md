@@ -15,38 +15,38 @@ The builder binary is compiled with varying Go versions across OCP releases 4.12
 - **BuildConfig Go**: The `go` directive in the builder's go.mod (controls GODEBUG behavioral defaults)
 - **Golang Builder (ART Gate)**: The actual Go compiler version ART uses to compile the builder binary
 
-| OCP Release | BuildConfig Go | Golang Builder (ART Gate) | Buildah Version | Buildah Go |
-|-------------|---------------|---------------------------|-----------------|------------|
-| 4.12 | 1.19 | 1.19 | v1.26.9 | 1.16 |
-| 4.13 | 1.19 | 1.19 | v1.29.5 | 1.17 |
-| 4.14 | 1.19 | 1.20 | v1.33.12 | 1.20 |
-| 4.15 | 1.19 | 1.20 | v1.33.12 | 1.20 |
-| 4.16 | 1.21 | 1.21 | v1.33.12 | 1.20 |
-| 4.17 | 1.22.0 | 1.22 | v1.37.7 | 1.22.0 |
-| 4.18 | 1.22.0 | 1.22 | v1.37.7 | 1.22.0 |
-| 4.19 | 1.22.8 | 1.23 | v1.39.7 | 1.22.8 |
-| 4.20 | 1.22.8 | 1.24 | v1.39.7 | 1.22.8 |
-| 4.21 | 1.22.8 | 1.25 | v1.39.7 | 1.22.8 |
+| OCP Release | BuildConfig Go (go.mod) | Golang Builder (ART Gate) |
+|-------------|------------------------|---------------------------|
+| 4.12 | 1.19 | 1.19 |
+| 4.13 | 1.19 | 1.19 |
+| 4.14 | 1.19 | 1.20 |
+| 4.15 | 1.19 | 1.20 |
+| 4.16 | 1.21 | 1.21 |
+| 4.17 | 1.22.0 | 1.22 |
+| 4.18 | 1.22.0 | 1.22 |
+| 4.19 | 1.22.8 | 1.23 |
+| 4.20 | 1.22.8 | 1.24 |
+| 4.21 | 1.22.8 | 1.25 |
 
 ### Future State (After Go Bump)
 
-| OCP Release | BuildConfig Go | Golang Builder (ART Gate) | Buildah Version | Buildah Go |
-|-------------|---------------|---------------------------|-----------------|------------|
-| 4.12 | **1.22.z** | 1.22 | v1.26.z | **1.22** |
-| 4.13 | **1.22.z** | 1.22 | v1.29.z | **1.22** |
-| 4.14 | **1.22.z** | 1.22 | v1.33.z | **1.22** |
-| 4.15 | **1.22.z** | 1.22 | v1.33.z | **1.22** |
-| 4.16 | **1.22.z** | 1.22 | v1.33.z | **1.22** |
-| 4.17 | 1.22.z | 1.22 | v1.37.z | 1.22 |
-| 4.18 | 1.22.z | 1.22 | v1.37.z | 1.22 |
-| 4.19 | 1.22.z | 1.23 | v1.39.z | 1.22 |
-| 4.20 | 1.22.z | 1.24 | v1.39.z | 1.22 |
-| 4.21 | 1.22.z | 1.25 | v1.39.z | 1.22 |
+| OCP Release | BuildConfig Go (go.mod) | Golang Builder (ART Gate) |
+|-------------|------------------------|---------------------------|
+| 4.12 | **1.22.z** | 1.22 |
+| 4.13 | **1.22.z** | 1.22 |
+| 4.14 | **1.22.z** | 1.22 |
+| 4.15 | **1.22.z** | 1.22 |
+| 4.16 | **1.22.z** | 1.22 |
+| 4.17 | 1.22.z | 1.22 |
+| 4.18 | 1.22.z | 1.22 |
+| 4.19 | 1.22.z | 1.23 |
+| 4.20 | 1.22.z | 1.24 |
+| 4.21 | 1.22.z | 1.25 |
 
 **Key observations:**
 - **4.17–4.21 require NO meaningful Go upgrade** — 4.17-4.18 are already at Go 1.22.0 (patch-level z-stream is not a behavioral change), and 4.19-4.21 are already at Go 1.22.8 with ART gates even higher (1.23–1.25).
 - **4.12–4.16 are the ONLY branches that require actual Go version upgrades.** These are the focus of this analysis.
-- **Buildah is also bumped** — importantly, buildah's own Go version changes too (e.g., v1.26.9 goes from Go 1.16 → 1.22, a 6 minor version jump). Since the builder imports buildah as a Go library, this is part of the same binary compilation.
+- All upstream dependencies (buildah, containers/image, source-to-image, client-go, etc.) are compiled into the builder binary. When the builder's Go compiler changes, ALL dependency code is recompiled. Each dependency's own go.mod `go` directive controls per-module semantics like loop variable scoping (Go 1.22) — see the dependency version matrix in Appendix A for per-module `go` directives.
 
 ### Builder's Key Dependencies
 
@@ -92,17 +92,16 @@ The 4.12 pin to a March 2020 `x/crypto` is the highest compilation risk — this
 
 ### Target State
 
-Bump the Go compiler version to **Go 1.22.z** for both the OpenShift Builder and Buildah across release branches 4.12 through 4.16. Branches 4.17–4.21 are already at Go 1.22.x and require no meaningful changes.
+Bump the Go compiler version to **Go 1.22.z** for the OpenShift Builder (and its upstream dependencies including buildah) across release branches 4.12 through 4.16. Branches 4.17–4.21 are already at Go 1.22.x and require no meaningful changes.
 
 ### What Changes and What Does Not
 
 | Aspect | Changes? | Details |
 |--------|----------|---------|
-| Go compiler version (Builder) | **YES** (4.12–4.16 only) | Bumped to Go 1.22.z. 4.17+ already at 1.22.x — no change. |
-| Go compiler version (Buildah) | **YES** (4.12–4.16 only) | Bumped to Go 1.22.z (buildah currently lags behind builder on some branches). 4.17+ already at 1.22.x. |
+| Go compiler version | **YES** (4.12–4.16 only) | Bumped to Go 1.22.z. 4.17+ already at 1.22.x — no change. |
 | go.mod `go` directive | **Likely YES** | Should match compiler version per Go conventions |
 | Builder source code | NO | No code changes |
-| Buildah source code | NO | No code changes |
+| Upstream dependency source code | NO | No code changes to buildah, containers/image, or any other dependency |
 | Dependency versions (go.mod `require`) | NO | All dependency versions stay the same |
 | `replace` directives | NO | Existing pins remain |
 
@@ -110,26 +109,23 @@ Bump the Go compiler version to **Go 1.22.z** for both the OpenShift Builder and
 
 **Important distinction**: The `go` directive in go.mod controls GODEBUG behavioral defaults, while the **Golang Builder (ART Gate)** is the actual Go compiler that produces the binary. These can differ — notably on 4.14–4.15 where go.mod says `go 1.19` but ART already compiles with Go 1.20.
 
-The table below shows **compiler jumps** (ART Gate → target), which determine the actual stdlib code compiled into the binary:
+The table below shows **compiler jumps** (ART Gate → target), which determine the actual stdlib code compiled into the builder binary:
 
-| OCP Release | Compiler Jump (ART Gate) | go.mod Jump | Buildah Go Jump | Scope |
-|-------------|--------------------------|-------------|-----------------|-------|
-| **4.12** | 1.19 → 1.22.z (3 minor) | 1.19 → 1.22 | **1.16 → 1.22** (6 minor) | **Largest jump — highest scrutiny** |
-| **4.13** | 1.19 → 1.22.z (3 minor) | 1.19 → 1.22 | **1.17 → 1.22** (5 minor) | Large jump |
-| **4.14** | **1.20 → 1.22.z** (2 minor) | 1.19 → 1.22 | 1.20 → 1.22 (2 minor) | Moderate jump (compiler already at 1.20) |
-| **4.15** | **1.20 → 1.22.z** (2 minor) | 1.19 → 1.22 | 1.20 → 1.22 (2 minor) | Moderate jump (compiler already at 1.20) |
-| **4.16** | 1.21 → 1.22.z (1 minor) | 1.21 → 1.22 | 1.20 → 1.22 (2 minor) | Small jump |
-| **4.17** | Already 1.22.0 | Already 1.22.0 | Already 1.22.0 | **No change needed** |
-| **4.18** | Already 1.22.0 | Already 1.22.0 | Already 1.22.0 | **No change needed** |
-| **4.19** | Already 1.22.8 | Already 1.22.8 | Already 1.22.8 | **No change needed** |
-| **4.20** | Already 1.22.8 | Already 1.22.8 | Already 1.22.8 | **No change needed** |
-| **4.21** | Already 1.22.8 | Already 1.22.8 | Already 1.22.8 | **No change needed** |
+| OCP Release | Compiler Jump (ART Gate) | go.mod Jump (GODEBUG) | Scope |
+|-------------|--------------------------|----------------------|-------|
+| **4.12** | 1.19 → 1.22.z (3 minor) | 1.19 → 1.22 | **Largest jump — highest scrutiny** |
+| **4.13** | 1.19 → 1.22.z (3 minor) | 1.19 → 1.22 | Large jump |
+| **4.14** | **1.20 → 1.22.z** (2 minor) | 1.19 → 1.22 | Moderate (compiler already at 1.20) |
+| **4.15** | **1.20 → 1.22.z** (2 minor) | 1.19 → 1.22 | Moderate (compiler already at 1.20) |
+| **4.16** | 1.21 → 1.22.z (1 minor) | 1.21 → 1.22 | Small jump |
+| **4.17–4.18** | Already 1.22.0 | Already 1.22.0 | **No change needed** |
+| **4.19–4.21** | Already 1.22.8 | Already 1.22.8 | **No change needed** |
 
 **The real work is concentrated on 4.12–4.16.** Branches 4.17–4.21 are already at Go 1.22.x and require no action.
 
-**Key observations:**
-- For **4.14–4.15**, the ART Gate is already Go 1.20, so Go 1.20 stdlib changes (constant-time crypto, etc.) are already compiled into the currently-shipping binary. The actual compiler jump is only 2 minor versions.
-- **The buildah Go version jump for 4.12 (Go 1.16 → 1.22) is the single largest jump** in this plan. Since the builder imports buildah as a Go library, buildah's code is compiled as part of the builder binary, making this relevant to the builder's behavior.
+**Key observation**: For **4.14–4.15**, the ART Gate is already Go 1.20, so Go 1.20 stdlib changes (constant-time crypto, etc.) are already compiled into the currently-shipping binary. The actual compiler jump is only 2 minor versions.
+
+**Note on upstream dependencies**: Each dependency compiled into the builder binary has its own go.mod `go` directive, which controls per-module semantics (e.g., Go 1.22 loop variable scoping). The dependency `go` directives are listed in Appendix A. Regardless of each dependency's `go` directive, ALL dependency code is recompiled with the builder's new Go compiler and uses the new Go stdlib.
 
 ---
 
@@ -137,24 +133,26 @@ The table below shows **compiler jumps** (ART Gate → target), which determine 
 
 This section catalogs the **behavioral changes** introduced in each Go release from 1.17 through 1.22 that are relevant to the builder/buildah binary. Not all changes apply to all branches — each branch only picks up changes between its current compiler version and Go 1.22.
 
-**Which changes apply to which branches:**
+**Which changes are newly introduced into the builder binary by this bump:**
 
-| Go Version Changes | 4.12 (1.19→1.22) | 4.13 (1.19→1.22) | 4.14–4.15 (1.20→1.22) | 4.16 (1.21→1.22) | Buildah 4.12 (1.16→1.22) | Buildah 4.13 (1.17→1.22) |
-|-------------------|:-:|:-:|:-:|:-:|:-:|:-:|
-| Go 1.17 changes | — | — | — | — | **YES** | **YES** |
-| Go 1.18 changes | — | — | — | — | **YES** | **YES** |
-| Go 1.19 changes | — | — | — | — | **YES** | **YES** |
-| Go 1.20 changes | YES | YES | — | — | **YES** | **YES** |
-| Go 1.21 changes | YES | YES | YES | — | **YES** | **YES** |
-| Go 1.22 changes | YES | YES | YES | YES | **YES** | **YES** |
+| Go Version Changes | 4.12 (1.19→1.22) | 4.13 (1.19→1.22) | 4.14–4.15 (1.20→1.22) | 4.16 (1.21→1.22) |
+|-------------------|:-:|:-:|:-:|:-:|
+| Go 1.17 changes | — | — | — | — |
+| Go 1.18 changes | — | — | — | — |
+| Go 1.19 changes | — | — | — | — |
+| Go 1.20 changes | **YES** | **YES** | — | — |
+| Go 1.21 changes | **YES** | **YES** | **YES** | — |
+| Go 1.22 changes | **YES** | **YES** | **YES** | **YES** |
 
-**Note**: "—" means the change is already compiled into the currently-shipping binary (the ART Gate compiler is at or above that version). "YES" means the change will be newly introduced by the Go 1.22 bump.
+**Note**: "—" means the change is already compiled into the currently-shipping builder binary (the ART Gate compiler is at or above that version). "YES" means the change will be newly introduced by the Go 1.22 bump. All upstream dependencies (buildah, containers/image, etc.) are compiled as part of the builder binary, so these changes apply to the builder AND all its dependency code equally.
+
+**Per-module `go` directive caveat**: While the builder's compiler determines the stdlib code, some Go 1.22 behavioral changes (specifically loop variable scoping) are controlled by each module's own go.mod `go` directive. Upstream dependencies with a `go` directive below 1.22 retain old loop variable semantics even when compiled with Go 1.22. See Section 4.8.4 and Appendix A for details.
 
 ---
 
-### 3.1 Go 1.17 Changes (applies to: buildah in 4.12 and 4.13 only)
+### 3.1 Go 1.17 Changes (already in builder — listed for reference)
 
-These changes are already active in the builder binary (compiled with Go 1.19) but are NEW for buildah code that was previously compiled with Go 1.16 (4.12) or Go 1.17 (4.13 — partially active).
+These changes are already compiled into the builder binary (ART Gate ≥ 1.19 for all branches). They are listed here for completeness, as they represent the cumulative stdlib changes since Go 1.16. No new impact from the Go 1.22 bump.
 
 | Change | Package | Type | GODEBUG | Builder Relevance |
 |--------|---------|------|---------|-------------------|
@@ -167,12 +165,12 @@ These changes are already active in the builder binary (compiled with Go 1.19) b
 | **Multiple Host headers rejected** in HTTP requests. | `net/http` | Behavioral | None | **NONE** — builder is a client, not a server |
 | **TLS cipher suite ordering now handled by `crypto/tls`** — `Config.CipherSuites` order is ignored; TLS stack chooses optimal order. | `crypto/tls` | Behavioral | None | **NONE** — c/image sets cipher suites explicitly, but ordering change is transparent |
 
-### 3.2 Go 1.18 Changes (applies to: buildah in 4.12 and 4.13 only)
+### 3.2 Go 1.18 Changes (already in builder — listed for reference)
 
 | Change | Package | Type | GODEBUG | Builder Relevance |
 |--------|---------|------|---------|-------------------|
 | **TLS 1.0/1.1 disabled by default for clients** — `Config.MinVersion` now defaults to TLS 1.2 for client connections. | `crypto/tls` | Breaking | `tls10default=1` (removed in 1.19) | **NONE** — c/image v5.22.0 explicitly sets `MinVersion: tls.VersionTLS10`, overriding this default |
-| **SHA-1 certificate rejection** — Certs signed with SHA-1 hash rejected during verification (except self-signed roots). | `crypto/x509` | Breaking | `x509sha1=1` (still available) | **LOW** — already active in builder via GODEBUG mapping. Buildah's code doesn't do cert verification directly (delegates to c/image) |
+| **SHA-1 certificate rejection** — Certs signed with SHA-1 hash rejected during verification (except self-signed roots). | `crypto/x509` | Breaking | `x509sha1=1` (still available) | **LOW** — already active in builder via GODEBUG mapping. Cert verification is handled by containers/image, not direct builder code. |
 | **Platform certificate verification on macOS/iOS** — `Certificate.Verify` uses OS-level APIs when `Roots` is nil. | `crypto/x509` | Behavioral | None | **NONE** — builder runs on Linux |
 | **Slice append growth formula changed** — `append()` uses smoother growth formula. Code depending on specific slice capacities may see different values. | `runtime` | Behavioral | None | **NONE** — no code depends on exact slice capacity |
 | **GC includes non-heap work** — GC frequency may change. | `runtime` | Behavioral | None | **LOW** — GC timing changes are transparent |
@@ -180,7 +178,7 @@ These changes are already active in the builder binary (compiled with Go 1.19) b
 | **`strconv.Unquote` rejects Unicode surrogate halves** (U+D800–U+DFFF). | `strconv` | Behavioral | None | **NONE** — no known usage in buildah |
 | **`text/template` short-circuit evaluation** — `and`/`or` functions now short-circuit. | `text/template` | Behavioral | None | **LOW** — buildah uses templates minimally |
 
-### 3.3 Go 1.19 Changes (applies to: buildah in 4.12 and 4.13 only)
+### 3.3 Go 1.19 Changes (already in builder — listed for reference)
 
 | Change | Package | Type | GODEBUG | Builder Relevance |
 |--------|---------|------|---------|-------------------|
@@ -201,7 +199,7 @@ These are the changes introduced when the compiler moves from Go 1.19 to Go 1.20
 | Change | Package | Type | GODEBUG | Builder Relevance |
 |--------|---------|------|---------|-------------------|
 | **`math/rand` auto-seeded** — Global random source no longer starts at `Seed(1)`. Top-level functions produce different sequences on each run. | `math/rand` | Breaking | `randautoseed=0` | **NONE** — builder's `randomBuildTag()` benefits from auto-seeding. Already active via GODEBUG mapping. |
-| **`archive/tar` insecure path detection** — `Reader.Next` can return `ErrInsecurePath` for dangerous filenames (absolute paths, `../` traversal). Default: allowed. | `archive/tar` | GODEBUG | `tarinsecurepath=0` to enable | **NONE** — builder uses `bsdtar` binary. Buildah uses `tar.NewWriter` (writing only, not reading). |
+| **`archive/tar` insecure path detection** — `Reader.Next` can return `ErrInsecurePath` for dangerous filenames (absolute paths, `../` traversal). Default: allowed. | `archive/tar` | GODEBUG | `tarinsecurepath=0` to enable | **NONE** — builder uses `bsdtar` binary, not Go's `archive/tar`. Upstream deps use `tar.NewWriter` (writing only, not reading). |
 | **`archive/zip` insecure path detection** — Similar to tar. Default: allowed. | `archive/zip` | GODEBUG | `zipinsecurepath=0` to enable | **NONE** — builder/buildah don't use Go's `archive/zip` |
 | **Constant-time RSA and ECDSA implementations** — 15–45% slower RSA, 5–30% slower ECDSA operations. | `crypto` | Compiled code | None | **LOW** — affects TLS handshake performance only. Minor impact on registry pull/push latency. |
 | **`tls.CertificateVerificationError` new type** — TLS handshake failures due to cert verification return new error type. | `crypto/tls` | Behavioral | None | **LOW** — may affect error type assertions in retry logic |
@@ -233,7 +231,7 @@ Go 1.21 formalizes the GODEBUG compatibility mechanism. For builder 4.16 (ART Ga
 
 | Change | Package | Type | GODEBUG | Builder Relevance |
 |--------|---------|------|---------|-------------------|
-| **For-loop variable per-iteration scoping** — Each iteration creates new variables. Controlled by each module's `go` directive, NOT the main module. | Language | Breaking | Per-module `go` directive | **NONE** — no affected patterns found in builder. Buildah safe (see Section 4.8.4) |
+| **For-loop variable per-iteration scoping** — Each iteration creates new variables. Controlled by each module's `go` directive, NOT the main module. | Language | Breaking | Per-module `go` directive | **NONE** — no affected patterns found in builder. Upstream deps retain old semantics (go.mod < 1.22). See Section 4.8.4. |
 | **RSA key exchange cipher suites removed from defaults** — CipherSuites without ECDHE no longer offered by default. | `crypto/tls` | Breaking | `tlsrsakex=1` | **NONE** — c/image explicitly sets `CipherSuites` in all versions |
 | **TLS 1.2 minimum for servers** — Default `MinVersion` for servers raised to TLS 1.2. | `crypto/tls` | Breaking | `tls10server=1` | **NONE** — builder is a client, not a TLS server |
 | **Empty Content-Length header rejected** — HTTP requests/responses with empty `Content-Length: ` header value are now errors. | `net/http` | Breaking | `httplaxcontentlength=1` | **LOW** — builder is an HTTP client; malformed Content-Length from registries is very rare |
@@ -467,19 +465,19 @@ Only these GODEBUG settings change when moving from effective `go 1.20` to `go 1
 
 Go 1.22 changes loop variable capture to per-iteration scope. This is controlled by each module's `go` directive, NOT the main module's:
 
-| Module | go.mod `go` directive | Gets New Semantics? | Notes |
-|--------|----------------------|---------------------|-------|
-| **openshift/builder** (main module) | 1.22 (after bump) | **YES** — builder's own code | Audited: no affected patterns found |
-| containers/buildah v1.26.9 | 1.16 | No — unless go.mod is also bumped | If buildah's go.mod `go` directive is bumped to 1.22, YES |
-| containers/buildah v1.33.12 | 1.20 | No — unless go.mod is also bumped | Same caveat |
-| containers/image v5.22.0 | 1.17 | No | Dependency module, not main |
-| containers/image v5.29.4 | 1.19 | No | Dependency module, not main |
-| openshift/source-to-image v1.3.2 | 1.18 | No | Dependency module, not main |
-| k8s.io/client-go v0.25.2 | ~1.19 | No | Dependency module, not main |
+| Module | go.mod `go` directive | Gets New Semantics? |
+|--------|----------------------|---------------------|
+| **openshift/builder** (main module) | 1.22 (after bump) | **YES** — builder's own code. Audited: no affected patterns found. |
+| containers/buildah v1.26.9 | 1.16 | No (below 1.22) |
+| containers/buildah v1.33.12 | 1.20 | No (below 1.22) |
+| containers/image v5.22.0 | 1.17 | No (below 1.22) |
+| containers/image v5.29.4 | 1.19 | No (below 1.22) |
+| openshift/source-to-image v1.3.2 | 1.18 | No (below 1.22) |
+| k8s.io/client-go v0.25.2 | ~1.19 | No (below 1.22) |
 
-**Important caveat for buildah**: If the buildah repo's go.mod `go` directive is also bumped to `1.22` (as implied by the "Buildah Go" column in the plan), then buildah's own code DOES get per-iteration loop semantics. Buildah has goroutines inside for-loops in `add.go` (lines 392, 398, 492, 527), but all are synchronized with `wg.Wait()` before the next iteration, so behavior is identical under old and new semantics.
+Since none of the upstream dependencies have a go.mod `go` directive ≥ 1.22, their code retains the old loop variable semantics. Only the builder's own code gets per-iteration scoping — and the audit found zero affected patterns.
 
-**Source code audit**: Manual review of all builder source files (`daemonless.go`, `docker.go`, `source.go`, `sti.go`, `common.go`, `dockerutil.go`, `util.go`, `transient_mounts.go`) found **no closure-captured loop variables** that would change behavior. Buildah's goroutine-in-loop patterns in `add.go` were also verified safe.
+**Source code audit**: Manual review of all builder source files (`daemonless.go`, `docker.go`, `source.go`, `sti.go`, `common.go`, `dockerutil.go`, `util.go`, `transient_mounts.go`) found **no closure-captured loop variables** that would change behavior. Key upstream dependencies (buildah `add.go`, containers/image) were also spot-checked and found safe.
 
 #### 4.8.5 Deprecated APIs Still Used
 
@@ -515,15 +513,15 @@ For 4.12–4.13, the Go 1.22 bump will introduce the Go 1.20 constant-time crypt
 
 ### Per-Release Risk Matrix
 
-| OCP | Compiler Jump (ART Gate) | Buildah Go Jump | GODEBUG Jump (go.mod) | TLS Impact | x/crypto Risk | Overall |
-|-----|--------------------------|-----------------|----------------------|------------|---------------|---------|
-| **4.12** | 1.19→1.22 (3 minor) | **1.16→1.22** | go1.20→go1.22 | NONE (explicit MinVersion + CipherSuites) | **Compile check needed** (2020 pin) | **LOW** |
-| **4.13** | 1.19→1.22 (3 minor) | **1.17→1.22** | go1.20→go1.22 | NONE (explicit MinVersion + CipherSuites) | **Compile check needed** (Sep 2022 pin) | **LOW** |
-| **4.14** | **1.20→1.22** (2 minor) | 1.20→1.22 | go1.20→go1.22 | NONE (explicit CipherSuites, TLS 1.2 default) | None (v0.19.0) | **LOW** |
-| **4.15** | **1.20→1.22** (2 minor) | 1.20→1.22 | go1.20→go1.22 | NONE (same as 4.14) | None (v0.19.0) | **LOW** |
-| **4.16** | 1.21→1.22 (1 minor) | 1.20→1.22 | go1.21→go1.22 | NONE (same as 4.14) | None (v0.19.0) | **MINIMAL** |
-| **4.17–18** | **no change** (already 1.22.0) | **no change** | None | NONE | None | **NONE** |
-| **4.19–21** | **no change** (already 1.22.8) | **no change** | None | NONE | None | **NONE** |
+| OCP | Compiler Jump (ART Gate) | GODEBUG Jump (go.mod) | TLS Impact | x/crypto Risk | Overall |
+|-----|--------------------------|----------------------|------------|---------------|---------|
+| **4.12** | 1.19→1.22 (3 minor) | go1.20→go1.22 | NONE (explicit MinVersion + CipherSuites) | **Compile check needed** (2020 pin) | **LOW** |
+| **4.13** | 1.19→1.22 (3 minor) | go1.20→go1.22 | NONE (explicit MinVersion + CipherSuites) | **Compile check needed** (Sep 2022 pin) | **LOW** |
+| **4.14** | **1.20→1.22** (2 minor) | go1.20→go1.22 | NONE (explicit CipherSuites, TLS 1.2 default) | None (v0.19.0) | **LOW** |
+| **4.15** | **1.20→1.22** (2 minor) | go1.20→go1.22 | NONE (same as 4.14) | None (v0.19.0) | **LOW** |
+| **4.16** | 1.21→1.22 (1 minor) | go1.21→go1.22 | NONE (same as 4.14) | None (v0.19.0) | **MINIMAL** |
+| **4.17–18** | **no change** (already 1.22.0) | None | NONE | None | **NONE** |
+| **4.19–21** | **no change** (already 1.22.8) | None | NONE | None | **NONE** |
 
 **Note**: 4.17–4.21 are already at Go 1.22.x. No meaningful Go upgrade is needed for these branches. The analysis below focuses on 4.12–4.16.
 
@@ -567,10 +565,10 @@ Before submitting the Go bump, verify the following:
 
 Start with the lowest-risk branches and work backward. Branches 4.17–4.21 require no action (already at Go 1.22.x).
 
-1. **Phase 1**: 4.16 — Builder: Go 1.21 → 1.22 (1 minor). Buildah: Go 1.20 → 1.22 (2 minor). Smallest jump. Low risk.
-2. **Phase 2**: 4.14–4.15 — Builder: Go 1.19 → 1.22 (3 minor). Buildah: Go 1.20 → 1.22 (2 minor). Modern dependencies (c/image v5.29.4, x/crypto v0.19.0). Low risk.
-3. **Phase 3**: 4.13 — Builder: Go 1.19 → 1.22 (3 minor). **Buildah: Go 1.17 → 1.22 (5 minor)**. Older dependencies. Needs compilation verification.
-4. **Phase 4**: 4.12 — Builder: Go 1.19 → 1.22 (3 minor). **Buildah: Go 1.16 → 1.22 (6 minor — the largest jump in the entire plan)**. Oldest dependencies, pinned x/crypto from March 2020. Requires thorough compilation and runtime verification.
+1. **Phase 1**: 4.16 — ART Gate 1.21 → 1.22 (1 minor version jump). Smallest change. Low risk.
+2. **Phase 2**: 4.14–4.15 — ART Gate 1.20 → 1.22 (2 minor). Modern dependencies (c/image v5.29.4, x/crypto v0.19.0). Low risk.
+3. **Phase 3**: 4.13 — ART Gate 1.19 → 1.22 (3 minor). Older dependencies, pinned x/crypto from Sep 2022. Needs compilation verification.
+4. **Phase 4**: 4.12 — ART Gate 1.19 → 1.22 (3 minor). Oldest dependencies, pinned x/crypto from March 2020. Requires thorough compilation and runtime verification.
 
 ### 6.3 go.mod `go` Directive Decision
 
@@ -691,9 +689,9 @@ Suggested release note text:
 
 ### B. Local Code Analysis Findings (from cloned repos)
 
-The following findings come from direct analysis of the locally cloned `builder` and `buildah` repositories.
+The following findings come from direct analysis of the locally cloned `builder` repository and spot-checks of key upstream dependencies.
 
-#### Builder (release-4.12)
+#### Builder Source (release-4.12)
 
 | Check | Result |
 |-------|--------|
@@ -706,16 +704,18 @@ The following findings come from direct analysis of the locally cloned `builder`
 | `ioutil` usage | **12 files** — all using deprecated but functional wrappers (`ioutil.ReadFile`, `TempFile`, `TempDir`, `WriteFile`) |
 | URL parsing (`url.Parse`) | `util.go:ParseProxyURL()` — already handles `url.Parse` behavior changes with explicit fallback logic |
 | SCM auth cert handling | `scmauth/cacert.go` — creates gitconfig pointing to CA cert file. TLS handled by `git` binary, not Go |
-| `context.TODO/Background` usage | Standard usage for buildah and K8s API calls — no version sensitivity |
+| `context.TODO/Background` usage | Standard usage for dependency calls and K8s API — no version sensitivity |
 
-#### Buildah (release-1.26, used in builder 4.12)
+#### Key Upstream Dependencies (spot-checked)
 
-| Check | Result |
-|-------|--------|
-| Goroutines inside for-loops | **Found in `add.go`** — lines 392, 398, 492, 527. BUT: (1) `wg.Wait()` synchronizes before next iteration, so behavior is identical under old and new semantics. (2) buildah's go.mod says `go 1.16`, so per-iteration loop variable semantics do NOT apply to buildah's code regardless. |
-| `archive/tar` usage | **Used in `add.go`, `digester.go`, `image.go`** — but for WRITING tar (via `tar.NewWriter`), NOT reading. The `tarinsecurepath` GODEBUG change only affects `tar.Reader`. No impact. |
-| TLS configuration | **NONE found** — all TLS is delegated to `containers/image` |
-| `exec.Command` usage | Container runtime commands (`runc`/`crun`), `slirp4netns` for networking, overlay mount programs — all explicit binary paths |
+| Dependency | Check | Result |
+|-----------|-------|--------|
+| containers/buildah (release-1.26) | Goroutines inside for-loops | Found in `add.go` (lines 392, 398, 492, 527) — all safe: `wg.Wait()` synchronizes before next iteration. go.mod says `go 1.16` so new loop semantics don't apply regardless. |
+| containers/buildah (release-1.26) | `archive/tar` usage | Used for WRITING only (`tar.NewWriter`), not reading. `tarinsecurepath` only affects `tar.Reader`. No impact. |
+| containers/buildah (release-1.26) | TLS configuration | **NONE** — all TLS delegated to containers/image |
+| containers/buildah (release-1.26) | `exec.Command` usage | Container runtimes (`runc`/`crun`), `slirp4netns`, overlay mount — all explicit binary paths |
+| containers/image (v5.22.0) | TLS configuration | Explicit `MinVersion` and `CipherSuites` — see Section 4.2 |
+| containers/image (v5.29.4) | TLS configuration | Explicit `CipherSuites`, Go default `MinVersion` (TLS 1.2) — see Section 4.2 |
 
 ### C. Source Code Files Analyzed
 
