@@ -118,8 +118,10 @@ The table below shows **compiler jumps** (ART Gate → target), which determine 
 | **4.14** | **1.20 → 1.22.z** (2 minor) | 1.19 → 1.22 | Moderate (compiler already at 1.20) |
 | **4.15** | **1.20 → 1.22.z** (2 minor) | 1.19 → 1.22 | Moderate (compiler already at 1.20) |
 | **4.16** | 1.21 → 1.22.z (1 minor) | 1.21 → 1.22 | Small jump |
-| **4.17–4.18** | Already 1.22.0 | Already 1.22.0 | **No change needed** |
-| **4.19–4.21** | Already 1.22.8 | Already 1.22.8 | **No change needed** |
+| **4.17–4.18** | Already 1.22 | Already 1.22.0 | **No change needed** |
+| **4.19** | Already 1.23 | Already 1.22.8 | **No change needed** |
+| **4.20** | Already 1.24 | Already 1.22.8 | **No change needed** |
+| **4.21** | Already 1.25 | Already 1.22.8 | **No change needed** |
 
 **The real work is concentrated on 4.12–4.16.** Branches 4.17–4.21 are already at Go 1.22.x and require no action.
 
@@ -520,8 +522,10 @@ For 4.12–4.13, the Go 1.22 bump will introduce the Go 1.20 constant-time crypt
 | **4.14** | **1.20→1.22** (2 minor) | go1.20→go1.22 | NONE (explicit CipherSuites, TLS 1.2 default) | None (v0.19.0) | **LOW** |
 | **4.15** | **1.20→1.22** (2 minor) | go1.20→go1.22 | NONE (same as 4.14) | None (v0.19.0) | **LOW** |
 | **4.16** | 1.21→1.22 (1 minor) | go1.21→go1.22 | NONE (same as 4.14) | None (v0.19.0) | **MINIMAL** |
-| **4.17–18** | **no change** (already 1.22.0) | None | NONE | None | **NONE** |
-| **4.19–21** | **no change** (already 1.22.8) | None | NONE | None | **NONE** |
+| **4.17–18** | **no change** (already 1.22) | None | NONE | None | **NONE** |
+| **4.19** | **no change** (already 1.23) | None | NONE | None | **NONE** |
+| **4.20** | **no change** (already 1.24) | None | NONE | None | **NONE** |
+| **4.21** | **no change** (already 1.25) | None | NONE | None | **NONE** |
 
 **Note**: 4.17–4.21 are already at Go 1.22.x. No meaningful Go upgrade is needed for these branches. The analysis below focuses on 4.12–4.16.
 
@@ -673,19 +677,20 @@ Suggested release note text:
 
 ### A. Complete Builder Dependency Version Matrix
 
-| Dependency | 4.12 | 4.13 | 4.14 | 4.16 | 4.17 | 4.19 |
-|-----------|------|------|------|------|------|------|
-| **go directive** | 1.19 | 1.19 | 1.19 | 1.21 | 1.22.0 | 1.22.8 |
-| containers/buildah | v1.26.9 (go 1.16) | v1.29.5 (go 1.17) | v1.33.12 (go 1.20) | v1.33.12 (go 1.20) | v1.37.7 | v1.39.7 (go 1.22.8) |
-| containers/image | v5.22.0 (go 1.17) | v5.24.1 | v5.29.4 (go 1.19) | v5.29.4 (go 1.19) | v5.32.2 | v5.34.3 (go 1.22.8) |
-| containers/storage | v1.42.0 | v1.45.3 | v1.51.2 | v1.51.2 | v1.55.1 | v1.57.2 |
-| containers/common | v0.49.1 | v0.51.2 | v0.57.7 | v0.57.7 | v0.60.4 | v0.62.3 |
-| openshift/source-to-image | v1.3.2 (go 1.18) | v1.3.2 | v1.3.2 | v1.3.2 | v1.4.0 | v1.4.0 |
-| openshift/imagebuilder | v1.2.4 | v1.2.4 | v1.2.15 | v1.2.15 | v1.2.15 | v1.2.15 |
-| fsouza/go-dockerclient | v1.7.11 | v1.9.3 | v1.10.x | v1.10.x | v1.12.0 | v1.12.0 |
-| k8s.io/client-go | v0.25.2 | v0.26.1 | v0.28.2 | v0.28.2 | v0.30.2 | v0.30.2 |
-| golang.org/x/crypto | **PINNED Mar 2020** | **PINNED Sep 2022** | v0.19.0 | v0.19.0 | v0.28.0 | v0.29.0 |
-| golang.org/x/net | v0.17.0 (replace) | v0.17.0 (replace) | v0.17.0 (replace) | v0.18.0 | v0.30.0 | v0.33.0 |
+| Dependency | 4.12 | 4.13 | 4.14 | 4.15 | 4.16 | 4.17 | 4.18 | 4.19 | 4.20 | 4.21 |
+|-----------|------|------|------|------|------|------|------|------|------|------|
+| **go directive** | 1.19 | 1.19 | 1.19 | 1.19 | 1.21 | 1.22.0 | 1.22.0 | 1.22.8 | 1.22.8 | 1.22.8 |
+| **ART Gate** | 1.19 | 1.19 | 1.20 | 1.20 | 1.21 | 1.22 | 1.22 | 1.23 | 1.24 | 1.25 |
+| containers/buildah | v1.26.9 | v1.29.5 | v1.33.12 | v1.33.12 | v1.33.12 | v1.37.7 | v1.37.7 | v1.39.7 | v1.39.7 | v1.39.7 |
+| containers/image | v5.22.0 | v5.24.1 | v5.29.4 | v5.29.4 | v5.29.4 | v5.32.2 | v5.32.2 | v5.34.3 | v5.34.3 | v5.34.3 |
+| containers/storage | v1.42.0 | v1.45.3 | v1.51.2 | v1.51.2 | v1.51.2 | v1.55.1 | v1.55.1 | v1.57.2 | v1.57.2 | v1.57.2 |
+| containers/common | v0.49.1 | v0.51.2 | v0.57.7 | v0.57.7 | v0.57.7 | v0.60.4 | v0.60.4 | v0.62.3 | v0.62.3 | v0.62.3 |
+| openshift/source-to-image | v1.3.2 | v1.3.2 | v1.3.2 | v1.3.9 | v1.3.9 | v1.4.0 | v1.4.0 | v1.4.0 | v1.4.0 | v1.4.0 |
+| openshift/imagebuilder | v1.2.4 | v1.2.4 | v1.2.15 | v1.2.6 | v1.2.15 | v1.2.15 | v1.2.14 | v1.2.15 | v1.2.15 | v1.2.15 |
+| fsouza/go-dockerclient | v1.7.11 | v1.9.3 | v1.10.0 | v1.10.0 | v1.10.0 | v1.12.0 | v1.11.1 | v1.12.0 | v1.12.0 | v1.12.0 |
+| k8s.io/client-go | v0.25.2 | v0.26.1 | v0.28.2 | v0.28.2 | v0.28.2 | v0.30.2 | v0.30.2 | v0.30.2 | v0.30.2 | v0.30.2 |
+| golang.org/x/crypto | **PINNED Mar 2020** | **PINNED Sep 2022** | v0.19.0 | v0.19.0 | v0.19.0 | v0.28.0 | v0.31.0 | v0.29.0 | v0.32.0 | v0.32.0 |
+| golang.org/x/net | v0.17.0 (replace) | v0.17.0 (replace) | v0.17.0 (replace) | v0.18.0 | v0.18.0 | v0.30.0 | v0.33.0 | v0.33.0 | v0.34.0 | v0.34.0 |
 
 ### B. Local Code Analysis Findings (from cloned repos)
 
