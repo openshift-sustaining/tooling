@@ -711,9 +711,9 @@ Suggested release note text:
 | golang.org/x/crypto | **PINNED Mar 2020** | **PINNED Sep 2022** | v0.19.0 | v0.19.0 | v0.19.0 | v0.28.0 | v0.31.0 | v0.29.0 | v0.32.0 | v0.32.0 |
 | golang.org/x/net | v0.17.0 (replace) | v0.17.0 (replace) | v0.17.0 (replace) | v0.18.0 | v0.18.0 | v0.30.0 | v0.33.0 | v0.33.0 | v0.34.0 | v0.34.0 |
 
-### B. Local Code Analysis Findings (from cloned repos)
+### B. Local Code Analysis Findings
 
-The following findings come from direct analysis of the locally cloned `builder` repository and spot-checks of key upstream dependencies.
+The following findings come from direct analysis of the `builder` repository and spot-checks of key upstream dependencies.
 
 #### Builder Test Files (release-4.12)
 
