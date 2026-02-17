@@ -484,6 +484,10 @@ For 4.12–4.13, the Go 1.22 bump will introduce the Go 1.20 constant-time crypt
 
 **Note**: 4.17–4.21 are already at Go 1.22.x. No meaningful Go upgrade is needed for these branches. The analysis below focuses on 4.12–4.16.
 
+### Known Test Failures Requiring Code Changes
+
+The Go bump will cause **3 unit test failures** in `pkg/build/builder/common_test.go` due to Go 1.20's `math/rand` auto-seeding change. These tests use `rand.Seed(0)` to produce deterministic random output and assert exact string matches — the seeded sequence changes under Go 1.20+. This is a test-only issue; the production code (`randomBuildTag()`, `containerName()`) is unaffected and actually benefits from auto-seeding. See Appendix B for the full analysis and recommended fix.
+
 ### Why the Risk is Lower Than Initially Expected
 
 1. **TLS is explicitly configured in the dependency that handles ALL registry connections.** The `containers/image` library always explicitly sets `CipherSuites` and (in v5.22.0) `MinVersion`. Go's default TLS changes do not propagate through explicit configurations.
@@ -568,7 +572,8 @@ Before submitting the Go bump, verify the following:
 **For ALL branches (4.12–4.16):**
 - [ ] `go build` succeeds with Go 1.22.z without source code changes
 - [ ] `go vet` passes without new issues
-- [ ] Existing unit tests pass
+- [ ] **Fix `rand.Seed(0)` in `common_test.go`** — `TestRandomBuildTag` and `TestContainerName` use `rand.Seed(0)` for deterministic output and assert exact strings. Go 1.20+ makes `rand.Seed()` a no-op on the global source, so these tests WILL FAIL. Fix by using `rand.New(rand.NewSource(0))` or by changing assertions to validate format/length instead of exact values. See Appendix B for details.
+- [ ] Existing unit tests pass (after `rand.Seed` fix above)
 - [ ] CI pipeline produces a valid builder image
 
 **For 4.12 specifically:**
@@ -710,6 +715,52 @@ Suggested release note text:
 
 The following findings come from direct analysis of the locally cloned `builder` repository and spot-checks of key upstream dependencies.
 
+#### Builder Test Files (release-4.12)
+
+All 22 `*_test.go` files in the builder repo were audited for patterns affected by the Go 1.19→1.22 bump. The audit checked for: `rand.Seed()` usage, `ioutil` deprecations, `panic(nil)` recovery, TLS configuration, `unsafe` usage, `sort.Slice` stability assumptions, JSON byte-level comparisons, `t.Parallel()` with loop variable capture, `archive/tar` reader usage, HTTP server patterns, `reflect.SliceHeader`/`StringHeader`, `errors.As`/`Is` patterns, and `exec.Command` PATH sensitivity.
+
+**CRITICAL: `rand.Seed(0)` Test Failures**
+
+`pkg/build/builder/common_test.go` uses `rand.Seed(0)` to produce deterministic random output and then asserts exact string matches. Go 1.20 changed `math/rand` so that the global source is auto-seeded and `rand.Seed()` on the global source becomes effectively a no-op when the global source has already been used. This means the seeded sequences will differ from what the tests expect.
+
+| Test | Line | Expected Value | Status |
+|------|------|---------------|--------|
+| `TestRandomBuildTag` | 96 | `"temp.builder.openshift.io/test/build-1:f1f85ff5"` | **WILL FAIL** |
+| `TestRandomBuildTag` (long name) | 96 | `"8a0f9d66cde28a0ebb1e3ee8ef9a484ce687afe0:f1f85ff5"` | **WILL FAIL** |
+| `TestContainerName` | 118 | `"openshift_test-strategy-build_my-build_ns_hook_f1f85ff5"` | **WILL FAIL** |
+| `TestRandomBuildTagNoDupes` | 105 | (uniqueness check, not exact match) | Likely OK |
+
+**Fix required**: Replace `rand.Seed(0)` with a local `rand.New(rand.NewSource(0))` and pass it to the functions under test, OR change the test assertions to validate format/length rather than exact output values.
+
+**Note**: These are test-only failures — the production `randomBuildTag()` and `containerName()` functions actually benefit from Go 1.20's auto-seeding (better randomness without explicit seeding). The fix is purely in the test expectations.
+
+**LOW: `ioutil` Deprecation (13 of 22 test files)**
+
+| File | `ioutil` Calls | Impact |
+|------|---------------|--------|
+| `pkg/build/builder/source_test.go` | 11 (`ReadFile`, `TempDir`, `WriteFile`) | None — functional |
+| `pkg/build/builder/docker_test.go` | 3 (`TempDir`, `WriteFile`) | None — functional |
+| `pkg/build/builder/common_test.go` | 1 (`TempDir`) | None — functional |
+| `pkg/build/builder/cmd/dockercfg/cfg_test.go` | 3 (`TempDir`, `WriteFile`) | None — functional |
+| + 9 other test files | Various | None — functional |
+
+All `ioutil` usage is deprecated since Go 1.16 but remains fully functional through Go 1.22. These are wrappers that delegate to `os` package equivalents. No test failures, but represents maintenance debt.
+
+**All Other Patterns: Clean**
+
+| Pattern Checked | Files with Hits | Impact |
+|----------------|----------------|--------|
+| TLS configuration in tests | 0 | N/A |
+| `panic(nil)` / recovery | 0 | N/A |
+| `unsafe.Pointer` / `reflect.SliceHeader` | 0 | N/A |
+| `sort.Slice` stability assumptions | 0 | N/A |
+| JSON byte-level comparison | 0 | N/A |
+| `t.Parallel()` with loop variable capture | 0 | N/A |
+| `archive/tar` reader | 0 | N/A |
+| HTTP server (`httptest.NewServer`) | 1 (`source_test.go`) | None — trivial test server |
+| `exec.Command` | 1 (`source_test.go` — `git`) | None — explicit binary path |
+| Error string comparison | 1 (`docker_test.go`) | None — app-level errors, not stdlib |
+
 #### Builder Source (release-4.12)
 
 | Check | Result |
@@ -749,6 +800,10 @@ The following findings come from direct analysis of the locally cloned `builder`
 | `pkg/build/builder/util.go` | URL parsing, registry normalization, cert mount paths |
 | `pkg/build/builder/transient_mounts.go` | CA trust mounts, RHSM cert mounts, build volume mounts |
 | `pkg/build/builder/cmd/dockercfg/cfg.go` | Docker auth file reading, credential provider integration |
+| `pkg/build/builder/common_test.go` | `rand.Seed(0)` usage, deterministic output assertions, `ioutil` usage |
+| `pkg/build/builder/source_test.go` | `ioutil` usage (11 calls), `exec.Command("git")`, `httptest.NewServer` |
+| `pkg/build/builder/docker_test.go` | `ioutil` usage, error string comparisons, mixed `os.MkdirTemp`/`ioutil.TempDir` |
+| All 22 `*_test.go` files | Full audit for Go bump impact patterns (see Appendix B) |
 | `containers/image/.../docker_client.go` | TLS config creation (`newDockerClient`), transport setup (`detectProperties`) |
 | `containers/image/.../tlsclientconfig.go` | Certificate loading, system cert pool, HTTP transport defaults |
 | `containers/buildah/pull.go` | Image pull delegation to `containers/common/libimage` |
